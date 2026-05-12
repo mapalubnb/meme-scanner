@@ -165,14 +165,7 @@ export class DeepSeekService {
     const timeout = getTimeout();
     console.log(`${logTag()} Analyzing contract, prompt length: ${prompt.length} chars, model: ${currentModel}, thinking: ${thinking}, timeout: ${timeout / 1000}s, retries: ${thinking ? 0 : 1}`);
 
-    try {
-      modelManager.trackCall();
-      const res = await withRetry(() => getClient().post('/chat/completions', {
-        model: currentModel,
-        messages: [
-          {
-            role: 'system',
-            content: `你是一个专业的链上memecoin合约审计师和代币分析师。你的任务是根据提供的合约源码和链上数据，全面分析这个代币合约。
+    const systemPrompt = `你是一个专业的链上memecoin合约审计师和代币分析师。你的任务是根据提供的合约源码和链上数据，全面分析这个代币合约。
 
 输出格式要求（严格按此格式）：
 
@@ -202,19 +195,19 @@ export class DeepSeekService {
 - 不要给出是否适合入场/交易的建议
 - 只做技术层面的客观分析
 - 使用中文
-- 确保每个章节完整输出，不要中途截断`,
-          },
-          {
-            role: 'user',
-            content: prompt,
-          },
-        ],
-        temperature: 0.3,
-      }));
+- 确保每个章节完整输出，不要中途截断`;
 
-      const content = res.data?.choices?.[0]?.message?.content;
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt },
+    ];
+
+    try {
+      modelManager.trackCall();
+      // Use streaming to avoid Cloudflare 504 gateway timeout.
+      // With stream=true, the first byte arrives quickly, keeping the connection alive.
+      const content = await withRetry(() => this.streamRequest(currentModel, messages));
       if (!content) {
-        console.error(`${logTag()} Empty response. Full response:`, JSON.stringify(res.data).slice(0, 500));
         return 'AI分析返回为空，请稍后重试';
       }
       return content;
@@ -231,6 +224,90 @@ export class DeepSeekService {
 
       return 'AI分析暂时不可用';
     }
+  }
+
+  /**
+   * Stream a chat completion request and collect the full response.
+   * Streaming avoids Cloudflare 504 because data flows continuously,
+   * preventing the "waiting for first byte" timeout.
+   */
+  private async streamRequest(model: string, messages: Array<{ role: string; content: string }>): Promise<string> {
+    const rawUrl = modelManager.getBaseUrl().replace(/\/+$/, '');
+    const baseURL = rawUrl.endsWith('/v1') ? rawUrl : `${rawUrl}/v1`;
+    const timeout = getTimeout();
+
+    const res = await axios.post(`${baseURL}/chat/completions`, {
+      model,
+      messages,
+      temperature: 0.3,
+      stream: true,
+    }, {
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${modelManager.getApiKey()}`,
+      },
+      responseType: 'stream',
+      timeout,
+    });
+
+    return new Promise<string>((resolve, reject) => {
+      let content = '';
+      let buffer = '';
+
+      const stream = res.data;
+
+      stream.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString();
+        // SSE format: each event is "data: {...}\n\n"
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            const delta = parsed.choices?.[0]?.delta?.content;
+            if (delta) content += delta;
+          } catch {
+            // Skip malformed JSON chunks
+          }
+        }
+      });
+
+      stream.on('end', () => {
+        // Process any remaining buffer
+        if (buffer.trim()) {
+          const trimmed = buffer.trim();
+          if (trimmed.startsWith('data:')) {
+            const data = trimmed.slice(5).trim();
+            if (data !== '[DONE]') {
+              try {
+                const parsed = JSON.parse(data);
+                const delta = parsed.choices?.[0]?.delta?.content;
+                if (delta) content += delta;
+              } catch {}
+            }
+          }
+        }
+        console.log(`${logTag()} Stream complete, received ${content.length} chars`);
+        resolve(content);
+      });
+
+      stream.on('error', (err: any) => {
+        console.error(`${logTag()} Stream error:`, err.message);
+        if (content.length > 100) {
+          // If we already got substantial content, return what we have
+          console.log(`${logTag()} Returning partial content (${content.length} chars)`);
+          resolve(content);
+        } else {
+          reject(err);
+        }
+      });
+    });
   }
 
   /**
