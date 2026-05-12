@@ -206,7 +206,9 @@ class AIProviderManager {
   // --- Current AI config (used by DeepSeekService) ---
 
   getBaseUrl(): string {
-    return this.getCurrentProvider()?.baseUrl || 'https://api.deepseek.com';
+    const url = this.getCurrentProvider()?.baseUrl || 'https://api.deepseek.com';
+    // Strip trailing slashes to prevent double-slash in URL concatenation
+    return url.replace(/\/+$/, '');
   }
 
   getApiKey(): string {

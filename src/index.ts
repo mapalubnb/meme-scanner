@@ -146,7 +146,7 @@ async function handleCommand(content: string, messageId: string, _chatId: string
 
     case '/status':
       try {
-        const currentBaseUrl = modelManager.getBaseUrl();
+        const currentBaseUrl = modelManager.getBaseUrl().replace(/\/+$/, '');
         const baseURL = currentBaseUrl.endsWith('/v1')
           ? currentBaseUrl
           : `${currentBaseUrl}/v1`;

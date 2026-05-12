@@ -4,8 +4,9 @@ import { ContractAnalysis } from '../types';
 
 // Create client dynamically based on current provider
 function createClient(): AxiosInstance {
-  const baseUrl = modelManager.getBaseUrl();
-  const baseURL = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
+  // Strip trailing slashes to avoid double-slash issues (e.g. https://example.com//v1)
+  const rawUrl = modelManager.getBaseUrl().replace(/\/+$/, '');
+  const baseURL = rawUrl.endsWith('/v1') ? rawUrl : `${rawUrl}/v1`;
   const instance = axios.create({
     baseURL,
     timeout: 90000,
