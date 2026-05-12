@@ -13,13 +13,28 @@ function isThinkingModel(model: string): boolean {
   return THINKING_MODEL_PATTERNS.some(p => lower.includes(p));
 }
 
+/** Dynamic log tag based on current provider name */
+function logTag(): string {
+  return `[AI:${modelManager.getCurrentProviderName()}]`;
+}
+
+/**
+ * Get timeout for current provider/model.
+ * Priority: AI_TIMEOUT env var > thinking model (300s) > default (60s)
+ * Reduced from 90s to 60s to stay under Cloudflare's 100s gateway timeout.
+ */
+function getTimeout(): number {
+  const envTimeout = process.env.AI_TIMEOUT ? parseInt(process.env.AI_TIMEOUT, 10) : 0;
+  if (envTimeout > 0) return envTimeout;
+  return isThinkingModel(modelManager.getModel()) ? 300000 : 60000;
+}
+
 // Create client dynamically based on current provider and model
 function createClient(): AxiosInstance {
   // Strip trailing slashes to avoid double-slash issues (e.g. https://example.com//v1)
   const rawUrl = modelManager.getBaseUrl().replace(/\/+$/, '');
   const baseURL = rawUrl.endsWith('/v1') ? rawUrl : `${rawUrl}/v1`;
-  // Thinking models need much longer timeout (5 min vs 90s)
-  const timeout = isThinkingModel(modelManager.getModel()) ? 300000 : 90000;
+  const timeout = getTimeout();
   const instance = axios.create({
     baseURL,
     timeout,
@@ -39,8 +54,9 @@ function getClient(): AxiosInstance {
 /**
  * Retry wrapper for API calls
  * Thinking models skip retries (they are slow by nature, retrying wastes time and money)
+ * 5xx errors (like 504 gateway timeout) are retried; 4xx are not (except 429).
  */
-async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 2, delayMs: number = 2000): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, delayMs: number = 3000): Promise<T> {
   const thinking = isThinkingModel(modelManager.getModel());
   const effectiveRetries = thinking ? 0 : maxRetries;
 
@@ -57,7 +73,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 2, delayM
       }
       if (i < effectiveRetries) {
         const wait = delayMs * (i + 1); // Linear backoff
-        console.log(`[DeepSeek] Retry ${i + 1}/${effectiveRetries} after ${wait}ms...`);
+        console.log(`${logTag()} Retry ${i + 1}/${effectiveRetries} after ${wait}ms...`);
         await new Promise(resolve => setTimeout(resolve, wait));
       }
     }
@@ -72,21 +88,21 @@ export class DeepSeekService {
   async listModels(): Promise<string[]> {
     const baseUrl = modelManager.getBaseUrl();
     const apiUrl = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
-    console.log(`[DeepSeek] Fetching models from: ${apiUrl}/models`);
+    console.log(`${logTag()} Fetching models from: ${apiUrl}/models`);
     try {
       const res = await getClient().get('/models');
       const data = res.data;
       // Handle different response formats from various providers
       const models = data?.data || data?.models || [];
       if (!Array.isArray(models)) {
-        console.error('[DeepSeek] Unexpected models response format:', JSON.stringify(data).slice(0, 500));
+        console.error(`${logTag()} Unexpected models response format:`, JSON.stringify(data).slice(0, 500));
         throw new Error('模型列表格式异常');
       }
       return models.map((m: any) => m.id || m.name || m).filter(Boolean).sort();
     } catch (error: any) {
       const status = error?.response?.status;
       const errMsg = error?.response?.data?.error?.message || error?.response?.data?.message || error?.message;
-      console.error(`[DeepSeek] listModels error (status=${status}):`, error?.response?.data || error?.message);
+      console.error(`${logTag()} listModels error (status=${status}):`, error?.response?.data || error?.message);
       if (status === 401) throw new Error('API Key 无效');
       if (status === 403) throw new Error('无权限访问模型列表');
       if (status === 404) throw new Error(`该提供商不支持 /models 接口 (${apiUrl}/models 返回 404)`);
@@ -104,7 +120,8 @@ export class DeepSeekService {
 
     const currentModel = modelManager.getModel();
     const thinking = isThinkingModel(currentModel);
-    console.log(`[DeepSeek] Chat request, model: ${currentModel}, msg length: ${message.length}, thinking: ${thinking}, timeout: ${thinking ? '300s' : '90s'}`);
+    const timeout = getTimeout();
+    console.log(`${logTag()} Chat request, model: ${currentModel}, msg length: ${message.length}, thinking: ${thinking}, timeout: ${timeout / 1000}s`);
 
     try {
       modelManager.trackCall();
@@ -138,14 +155,15 @@ export class DeepSeekService {
   async analyzeContract(analysis: ContractAnalysis): Promise<string> {
     // Check if API key is configured
     if (!aiConfig.apiKey) {
-      console.warn('[DeepSeek] API key not configured');
+      console.warn(`${logTag()} API key not configured`);
       return 'AI分析不可用：未配置 API Key';
     }
 
     const prompt = this.buildPrompt(analysis);
     const currentModel = modelManager.getModel();
     const thinking = isThinkingModel(currentModel);
-    console.log(`[DeepSeek] Analyzing contract, prompt length: ${prompt.length} chars, model: ${currentModel}, thinking: ${thinking}, timeout: ${thinking ? '300s' : '90s'}, retries: ${thinking ? 0 : 2}`);
+    const timeout = getTimeout();
+    console.log(`${logTag()} Analyzing contract, prompt length: ${prompt.length} chars, model: ${currentModel}, thinking: ${thinking}, timeout: ${timeout / 1000}s, retries: ${thinking ? 0 : 1}`);
 
     try {
       modelManager.trackCall();
@@ -196,18 +214,19 @@ export class DeepSeekService {
 
       const content = res.data?.choices?.[0]?.message?.content;
       if (!content) {
-        console.error('[DeepSeek] Empty response. Full response:', JSON.stringify(res.data).slice(0, 500));
+        console.error(`${logTag()} Empty response. Full response:`, JSON.stringify(res.data).slice(0, 500));
         return 'AI分析返回为空，请稍后重试';
       }
       return content;
     } catch (error: any) {
       const status = error?.response?.status;
       const errData = error?.response?.data;
-      console.error(`[DeepSeek] Error (status=${status}):`, JSON.stringify(errData || error.message).slice(0, 500));
+      console.error(`${logTag()} Error (status=${status}):`, JSON.stringify(errData || error.message).slice(0, 500));
 
       if (status === 401) return 'AI分析不可用：API Key 无效';
       if (status === 429) return 'AI分析不可用：请求频率超限，稍后重试';
       if (status === 404) return `AI分析不可用：模型 "${currentModel}" 不存在，请检查配置`;
+      if (status === 502 || status === 503 || status === 504) return `AI分析不可用：网关超时(${status})，第三方服务响应过慢，可尝试缩短源码或切换提供商`;
       if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') return 'AI分析超时，请稍后重试';
 
       return 'AI分析暂时不可用';
@@ -411,10 +430,13 @@ export class DeepSeekService {
     }
 
     // FULL CONTRACT SOURCE CODE - this is the key data for AI deep analysis
-    // Cap source code at 30000 chars to avoid DeepSeek timeout (900s server limit)
+    // Cap source code to avoid third-party proxy timeouts (Cloudflare 504 at ~100s)
+    // Env var AI_MAX_SOURCE_LEN allows override (default 20000, was 30000)
     if (analysis.contractSource?.isVerified && analysis.contractSource.sourceCode) {
       let source = analysis.contractSource.sourceCode;
-      const MAX_SOURCE_LEN = 30000;
+      const MAX_SOURCE_LEN = process.env.AI_MAX_SOURCE_LEN
+        ? parseInt(process.env.AI_MAX_SOURCE_LEN, 10)
+        : 20000;
 
       if (source.length > MAX_SOURCE_LEN) {
         // Strip standard OpenZeppelin/library code and keep custom logic
