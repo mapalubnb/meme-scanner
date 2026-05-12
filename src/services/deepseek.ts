@@ -52,13 +52,27 @@ export class DeepSeekService {
    * List available models from the API provider
    */
   async listModels(): Promise<string[]> {
+    const baseUrl = modelManager.getBaseUrl();
+    const apiUrl = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
+    console.log(`[DeepSeek] Fetching models from: ${apiUrl}/models`);
     try {
       const res = await getClient().get('/models');
-      const models = res.data?.data || [];
-      return models.map((m: any) => m.id).sort();
+      const data = res.data;
+      // Handle different response formats from various providers
+      const models = data?.data || data?.models || [];
+      if (!Array.isArray(models)) {
+        console.error('[DeepSeek] Unexpected models response format:', JSON.stringify(data).slice(0, 500));
+        throw new Error('模型列表格式异常');
+      }
+      return models.map((m: any) => m.id || m.name || m).filter(Boolean).sort();
     } catch (error: any) {
-      console.error('[DeepSeek] listModels error:', error?.response?.data || error?.message);
-      throw new Error(`获取模型列表失败: ${error?.response?.data?.error?.message || error?.message}`);
+      const status = error?.response?.status;
+      const errMsg = error?.response?.data?.error?.message || error?.response?.data?.message || error?.message;
+      console.error(`[DeepSeek] listModels error (status=${status}):`, error?.response?.data || error?.message);
+      if (status === 401) throw new Error('API Key 无效');
+      if (status === 403) throw new Error('无权限访问模型列表');
+      if (status === 404) throw new Error(`该提供商不支持 /models 接口 (${apiUrl}/models 返回 404)`);
+      throw new Error(`获取模型列表失败: ${errMsg}`);
     }
   }
 
@@ -66,7 +80,7 @@ export class DeepSeekService {
    * General chat: send a message directly to the AI model
    */
   async chat(message: string): Promise<string> {
-    if (!aiConfig.apiKey || aiConfig.apiKey === 'your_deepseek_api_key_here') {
+    if (!aiConfig.apiKey) {
       return 'AI不可用：未配置 API Key';
     }
 
@@ -104,7 +118,7 @@ export class DeepSeekService {
    */
   async analyzeContract(analysis: ContractAnalysis): Promise<string> {
     // Check if API key is configured
-    if (!aiConfig.apiKey || aiConfig.apiKey === 'your_deepseek_api_key_here') {
+    if (!aiConfig.apiKey) {
       console.warn('[DeepSeek] API key not configured');
       return 'AI分析不可用：未配置 API Key';
     }

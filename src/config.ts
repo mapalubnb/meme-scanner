@@ -26,6 +26,14 @@ export const config = {
 };
 
 // ===== Load AI Providers from env =====
+// Placeholder patterns that should be treated as "not configured"
+const PLACEHOLDER_KEYS = ['sk-xxxxxxxxxx', 'sk-xxx', 'your_api_key_here', 'your_deepseek_api_key_here', ''];
+
+function isValidKey(key: string | undefined): boolean {
+  if (!key) return false;
+  return !PLACEHOLDER_KEYS.includes(key.trim());
+}
+
 function loadAIProviders(): AIProvider[] {
   const providers: AIProvider[] = [];
   const providerList = process.env.AI_PROVIDERS;
@@ -38,10 +46,10 @@ function loadAIProviders(): AIProvider[] {
       const baseUrl = process.env[`AI_${upper}_URL`];
       const apiKey = process.env[`AI_${upper}_KEY`];
       const model = process.env[`AI_${upper}_MODEL`] || '';
-      if (baseUrl && apiKey) {
-        providers.push({ name, baseUrl, apiKey, defaultModel: model });
+      if (baseUrl && isValidKey(apiKey)) {
+        providers.push({ name, baseUrl, apiKey: apiKey!, defaultModel: model });
       } else {
-        console.warn(`[Config] Provider "${name}" skipped: missing AI_${upper}_URL or AI_${upper}_KEY`);
+        console.warn(`[Config] Provider "${name}" skipped: missing or placeholder AI_${upper}_URL / AI_${upper}_KEY`);
       }
     }
   }
@@ -51,7 +59,7 @@ function loadAIProviders(): AIProvider[] {
     const apiKey = process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || '';
     const baseUrl = process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
     const model = process.env.AI_MODEL || process.env.DEEPSEEK_MODEL || 'deepseek-chat';
-    if (apiKey) {
+    if (isValidKey(apiKey)) {
       providers.push({ name: 'default', baseUrl, apiKey, defaultModel: model });
     }
   }
