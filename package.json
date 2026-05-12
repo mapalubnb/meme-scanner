@@ -1,0 +1,24 @@
+{
+  "name": "meme-scanner",
+  "version": "1.0.0",
+  "description": "Multi-chain memecoin contract analysis bot with Feishu integration",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.40.0",
+    "axios": "^1.7.0",
+    "dotenv": "^16.4.0",
+    "form-data": "^4.0.5",
+    "sharp": "^0.33.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/sharp": "^0.32.0",
+    "ts-node": "^10.9.0",
+    "typescript": "^5.3.0"
+  }
+}
