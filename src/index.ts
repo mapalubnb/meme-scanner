@@ -1,6 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import axios from 'axios';
-import { config, modelManager } from './config';
+import { config, modelManager, aiConfig } from './config';
 import { FeishuService } from './services/feishu';
 import { ContractAnalyzer } from './services/analyzer';
 import { DeepSeekService } from './services/deepseek';
@@ -35,6 +35,30 @@ async function handleCommand(content: string, messageId: string, _chatId: string
     return;
   }
 
+  if (cmd.startsWith('/provider ')) {
+    const providerName = trimmed.slice('/provider '.length).trim();
+    if (!providerName) {
+      await feishu.replyText(messageId, `当前提供商: ${modelManager.getCurrentProviderName()}\n\n用法: /provider <提供商名称>`);
+      return;
+    }
+    const oldProvider = modelManager.getCurrentProviderName();
+    const success = modelManager.setProvider(providerName);
+    if (success) {
+      await feishu.replyText(messageId, [
+        `✅ AI提供商已切换`,
+        '',
+        `旧提供商: ${oldProvider}`,
+        `新提供商: ${modelManager.getCurrentProviderName()}`,
+        `当前模型: ${modelManager.getModel()}`,
+        `API: ${modelManager.getBaseUrl()}`,
+      ].join('\n'));
+    } else {
+      const available = modelManager.getProviderNames().join(', ');
+      await feishu.replyText(messageId, `❌ 未找到提供商 "${providerName}"\n\n可用提供商: ${available}`);
+    }
+    return;
+  }
+
   if (cmd.startsWith('/model ')) {
     const newModel = trimmed.slice('/model '.length).trim();
     if (!newModel) {
@@ -43,7 +67,7 @@ async function handleCommand(content: string, messageId: string, _chatId: string
     }
     const oldModel = modelManager.getModel();
     modelManager.setModel(newModel);
-    await feishu.replyText(messageId, `✅ AI模型已切换\n\n旧模型: ${oldModel}\n新模型: ${newModel}`);
+    await feishu.replyText(messageId, `✅ AI模型已切换\n\n旧模型: ${oldModel}\n新模型: ${newModel}\n提供商: ${modelManager.getCurrentProviderName()}`);
     return;
   }
 
@@ -63,7 +87,9 @@ async function handleCommand(content: string, messageId: string, _chatId: string
         '命令:',
         '/help - 显示帮助',
         '/status - 服务状态',
-        '/models - 查看可用模型列表',
+        '/providers - 查看已配置的AI提供商',
+        '/provider <name> - 切换AI提供商',
+        '/models - 查看当前提供商可用模型',
         '/model <name> - 切换AI模型',
         '/ask <问题> - 直接与AI对话',
       ].join('\n'));
@@ -71,27 +97,31 @@ async function handleCommand(content: string, messageId: string, _chatId: string
 
     case '/status':
       try {
-        const baseURL = config.ai.baseUrl.endsWith('/v1')
-          ? config.ai.baseUrl
-          : `${config.ai.baseUrl}/v1`;
+        const currentBaseUrl = modelManager.getBaseUrl();
+        const baseURL = currentBaseUrl.endsWith('/v1')
+          ? currentBaseUrl
+          : `${currentBaseUrl}/v1`;
         const today = new Date();
         const startDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
         const endDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
         const [usageRes] = await Promise.allSettled([
           axios.get(`${baseURL}/dashboard/billing/usage`, {
-            headers: { Authorization: `Bearer ${config.ai.apiKey}` },
+            headers: { Authorization: `Bearer ${modelManager.getApiKey()}` },
             params: { start_date: startDate, end_date: endDate },
             timeout: 8000,
           }),
         ]);
 
         const uptime = Math.floor((Date.now() - modelManager.startedAt.getTime()) / 60000);
+        const providerNames = modelManager.getProviderNames();
         const lines = [
           `✅ 服务运行中（飞书长连接）`,
           `⏰ 时间: ${new Date().toISOString()}`,
+          `🏢 当前提供商: ${modelManager.getCurrentProviderName()}`,
           `🤖 当前模型: ${modelManager.getModel()}`,
-          `🔗 API: ${config.ai.baseUrl}`,
+          `🔗 API: ${currentBaseUrl}`,
+          `📋 已配置提供商: ${providerNames.join(', ')}`,
           `📞 本次启动AI调用: ${modelManager.aiCalls} 次`,
           `⏱️ 运行时长: ${uptime >= 60 ? Math.floor(uptime / 60) + '小时' + (uptime % 60) + '分' : uptime + '分钟'}`,
         ];
@@ -109,15 +139,38 @@ async function handleCommand(content: string, messageId: string, _chatId: string
         await feishu.replyText(messageId, [
           `✅ 服务运行中（飞书长连接）`,
           `⏰ 时间: ${new Date().toISOString()}`,
+          `🏢 当前提供商: ${modelManager.getCurrentProviderName()}`,
           `🤖 当前模型: ${modelManager.getModel()}`,
-          `🔗 API: ${config.ai.baseUrl}`,
+          `🔗 API: ${modelManager.getBaseUrl()}`,
           `💰 计费查询失败: ${error?.message || 'unknown'}`,
         ].join('\n'));
       }
       break;
 
+    case '/providers':
+      const providers = modelManager.getProviders();
+      const currentProviderName = modelManager.getCurrentProviderName();
+      const providerLines = [
+        `━━ 已配置的AI提供商 (共 ${providers.length} 个) ━━`,
+        `🏢 当前使用: ${currentProviderName}`,
+        '',
+      ];
+      for (const p of providers) {
+        const marker = p.name === currentProviderName ? ' ◀️ 当前' : '';
+        providerLines.push(`• ${p.name}${marker}`);
+        providerLines.push(`  URL: ${p.baseUrl}`);
+        providerLines.push(`  默认模型: ${p.defaultModel}`);
+      }
+      providerLines.push('', '切换提供商: /provider <名称>');
+      await feishu.replyText(messageId, providerLines.join('\n'));
+      break;
+
+    case '/provider':
+      await feishu.replyText(messageId, `🏢 当前提供商: ${modelManager.getCurrentProviderName()}\n\n用法: /provider <提供商名称>\n可用: ${modelManager.getProviderNames().join(', ')}`);
+      break;
+
     case '/model':
-      await feishu.replyText(messageId, `🤖 当前模型: ${modelManager.getModel()}\n\n用法: /model <模型名称>\n示例: /model claude-sonnet-4-20250514`);
+      await feishu.replyText(messageId, `🤖 当前模型: ${modelManager.getModel()}\n提供商: ${modelManager.getCurrentProviderName()}\n\n用法: /model <模型名称>\n示例: /model claude-sonnet-4-20250514`);
       break;
 
     case '/models':
@@ -193,9 +246,10 @@ async function handleMessage(data: any) {
 
     if (addresses.length === 0) {
       const lowerContent = content.toLowerCase();
-      const knownCommands = ['help', 'status', 'models', 'model', '/help', '/status', '/models', '/model'];
+      const knownCommands = ['help', 'status', 'models', 'model', 'providers', 'provider', '/help', '/status', '/models', '/model', '/providers', '/provider'];
       const isCommand = knownCommands.includes(lowerContent)
         || lowerContent.startsWith('/model ') || lowerContent.startsWith('model ')
+        || lowerContent.startsWith('/provider ') || lowerContent.startsWith('provider ')
         || lowerContent.startsWith('/ask ') || lowerContent.startsWith('ask ');
       if (isCommand) {
         const cmd = content.startsWith('/') ? content : '/' + content;
@@ -257,7 +311,8 @@ function startWSClient() {
   wsClient.start({ eventDispatcher } as any);
 
   console.log(`[Server] Meme Scanner running via Feishu WebSocket`);
-  console.log(`[Server] AI Model: ${modelManager.getModel()} | API: ${config.ai.baseUrl}`);
+  console.log(`[Server] AI Provider: ${modelManager.getCurrentProviderName()} | Model: ${modelManager.getModel()} | API: ${modelManager.getBaseUrl()}`);
+  console.log(`[Server] Available providers: ${modelManager.getProviderNames().join(', ')}`);
 
   feishu.sendStartupNotification().catch(err => {
     console.error('[Server] Startup notification failed:', err?.message || err);

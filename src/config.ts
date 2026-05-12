@@ -3,16 +3,19 @@ import { Chain, ChainConfig } from './types';
 
 dotenv.config();
 
+// ===== AI Provider Types =====
+export interface AIProvider {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  defaultModel: string;
+}
+
 export const config = {
   feishu: {
     appId: process.env.FEISHU_APP_ID!,
     appSecret: process.env.FEISHU_APP_SECRET!,
     chatId: process.env.FEISHU_CHAT_ID || process.env.FEISHU_NOTIFY_CHAT_ID || '',
-  },
-  ai: {
-    apiKey: process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || '',
-    model: process.env.AI_MODEL || process.env.DEEPSEEK_MODEL || 'deepseek-chat',
-    baseUrl: process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com',
   },
   etherscan: {
     apiKey: process.env.ETHERSCAN_API_KEY || '',
@@ -21,6 +24,42 @@ export const config = {
     apiKey: process.env.MORALIS_API_KEY || '',
   },
 };
+
+// ===== Load AI Providers from env =====
+function loadAIProviders(): AIProvider[] {
+  const providers: AIProvider[] = [];
+  const providerList = process.env.AI_PROVIDERS;
+
+  if (providerList) {
+    // Multi-provider mode: AI_PROVIDERS=deepseek,openai,siliconflow
+    const names = providerList.split(',').map(s => s.trim()).filter(Boolean);
+    for (const name of names) {
+      const upper = name.toUpperCase();
+      const baseUrl = process.env[`AI_${upper}_URL`];
+      const apiKey = process.env[`AI_${upper}_KEY`];
+      const model = process.env[`AI_${upper}_MODEL`] || '';
+      if (baseUrl && apiKey) {
+        providers.push({ name, baseUrl, apiKey, defaultModel: model });
+      } else {
+        console.warn(`[Config] Provider "${name}" skipped: missing AI_${upper}_URL or AI_${upper}_KEY`);
+      }
+    }
+  }
+
+  // Fallback: legacy single-provider config
+  if (providers.length === 0) {
+    const apiKey = process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || '';
+    const baseUrl = process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
+    const model = process.env.AI_MODEL || process.env.DEEPSEEK_MODEL || 'deepseek-chat';
+    if (apiKey) {
+      providers.push({ name: 'default', baseUrl, apiKey, defaultModel: model });
+    }
+  }
+
+  return providers;
+}
+
+const aiProviders = loadAIProviders();
 
 // Chain configurations
 // Note: explorerApiUrl/explorerApiKey removed - now using Etherscan V2 unified endpoint
@@ -69,16 +108,53 @@ export const launchpadFactories: Record<string, { name: string; chains: Chain[] 
   // Reserved for runtime-discovered or user-added factories
 };
 
-// ===== Runtime Model Manager =====
-// Allows switching AI model at runtime via chat commands
-class ModelManager {
+// ===== Runtime AI Provider Manager =====
+// Allows switching AI providers and models at runtime via chat commands
+class AIProviderManager {
+  private providers: AIProvider[];
+  private currentProviderIndex: number = 0;
   private currentModel: string;
   private _aiCalls: number = 0;
   private _startedAt: Date = new Date();
 
-  constructor() {
-    this.currentModel = config.ai.model;
+  constructor(providers: AIProvider[]) {
+    this.providers = providers;
+    this.currentModel = providers.length > 0 ? providers[0].defaultModel : 'deepseek-chat';
   }
+
+  // --- Provider management ---
+
+  getProviders(): AIProvider[] {
+    return this.providers;
+  }
+
+  getProviderNames(): string[] {
+    return this.providers.map(p => p.name);
+  }
+
+  getCurrentProvider(): AIProvider {
+    return this.providers[this.currentProviderIndex];
+  }
+
+  getCurrentProviderName(): string {
+    return this.getCurrentProvider()?.name || 'none';
+  }
+
+  /**
+   * Switch to a different provider by name.
+   * Returns true if switch succeeded, false if provider not found.
+   */
+  setProvider(name: string): boolean {
+    const idx = this.providers.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
+    if (idx === -1) return false;
+    this.currentProviderIndex = idx;
+    // Auto-switch to the provider's default model
+    this.currentModel = this.providers[idx].defaultModel;
+    console.log(`[AIManager] Provider switched to: ${name}, model: ${this.currentModel}`);
+    return true;
+  }
+
+  // --- Model management ---
 
   getModel(): string {
     return this.currentModel;
@@ -86,7 +162,17 @@ class ModelManager {
 
   setModel(model: string): void {
     this.currentModel = model;
-    console.log(`[ModelManager] Model switched to: ${model}`);
+    console.log(`[AIManager] Model switched to: ${model}`);
+  }
+
+  // --- Current AI config (used by DeepSeekService) ---
+
+  getBaseUrl(): string {
+    return this.getCurrentProvider()?.baseUrl || 'https://api.deepseek.com';
+  }
+
+  getApiKey(): string {
+    return this.getCurrentProvider()?.apiKey || '';
   }
 
   /** Increment AI call counter */
@@ -103,4 +189,11 @@ class ModelManager {
   }
 }
 
-export const modelManager = new ModelManager();
+export const modelManager = new AIProviderManager(aiProviders);
+
+// Legacy compat: expose a config.ai-like getter for code that still references it
+export const aiConfig = {
+  get apiKey() { return modelManager.getApiKey(); },
+  get baseUrl() { return modelManager.getBaseUrl(); },
+  get model() { return modelManager.getModel(); },
+};

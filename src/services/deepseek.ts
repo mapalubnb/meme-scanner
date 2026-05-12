@@ -1,25 +1,26 @@
 import axios, { AxiosInstance } from 'axios';
-import { config, modelManager } from '../config';
+import { modelManager, aiConfig } from '../config';
 import { ContractAnalysis } from '../types';
 
-// Create client with retry logic
+// Create client dynamically based on current provider
 function createClient(): AxiosInstance {
-  // Use /v1 suffix for OpenAI-compatible endpoints
-  const baseURL = config.ai.baseUrl.endsWith('/v1')
-    ? config.ai.baseUrl
-    : `${config.ai.baseUrl}/v1`;
+  const baseUrl = modelManager.getBaseUrl();
+  const baseURL = baseUrl.endsWith('/v1') ? baseUrl : `${baseUrl}/v1`;
   const instance = axios.create({
     baseURL,
-    timeout: 90000, // Increased timeout to 90s
+    timeout: 90000,
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${config.ai.apiKey}`,
+      Authorization: `Bearer ${modelManager.getApiKey()}`,
     },
   });
   return instance;
 }
 
-const client = createClient();
+// Use getter to always get fresh client with current provider config
+function getClient(): AxiosInstance {
+  return createClient();
+}
 
 /**
  * Retry wrapper for API calls
@@ -52,7 +53,7 @@ export class DeepSeekService {
    */
   async listModels(): Promise<string[]> {
     try {
-      const res = await client.get('/models');
+      const res = await getClient().get('/models');
       const models = res.data?.data || [];
       return models.map((m: any) => m.id).sort();
     } catch (error: any) {
@@ -65,7 +66,7 @@ export class DeepSeekService {
    * General chat: send a message directly to the AI model
    */
   async chat(message: string): Promise<string> {
-    if (!config.ai.apiKey || config.ai.apiKey === 'your_deepseek_api_key_here') {
+    if (!aiConfig.apiKey || aiConfig.apiKey === 'your_deepseek_api_key_here') {
       return 'AI不可用：未配置 API Key';
     }
 
@@ -74,7 +75,7 @@ export class DeepSeekService {
 
     try {
       modelManager.trackCall();
-      const res = await withRetry(() => client.post('/chat/completions', {
+      const res = await withRetry(() => getClient().post('/chat/completions', {
         model: currentModel,
         messages: [
           {
@@ -103,7 +104,7 @@ export class DeepSeekService {
    */
   async analyzeContract(analysis: ContractAnalysis): Promise<string> {
     // Check if API key is configured
-    if (!config.ai.apiKey || config.ai.apiKey === 'your_deepseek_api_key_here') {
+    if (!aiConfig.apiKey || aiConfig.apiKey === 'your_deepseek_api_key_here') {
       console.warn('[DeepSeek] API key not configured');
       return 'AI分析不可用：未配置 API Key';
     }
@@ -114,7 +115,7 @@ export class DeepSeekService {
 
     try {
       modelManager.trackCall();
-      const res = await withRetry(() => client.post('/chat/completions', {
+      const res = await withRetry(() => getClient().post('/chat/completions', {
         model: currentModel,
         messages: [
           {

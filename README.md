@@ -41,7 +41,7 @@ npm run build
 npm start
 # 或使用 PM2
 mkdir -p logs
-pm2 start ecosystem.config.js
+pm2 start memescanner.config.js
 pm2 save
 ```
 
@@ -58,17 +58,38 @@ pm2 save
 6. 发布应用版本，等待审批通过
 7. 将机器人添加到群聊
 
-### 4. AI 配置
+### 4. AI 配置 (多提供商)
 
-支持所有兼容 OpenAI Chat Completions 协议的 API:
+支持同时配置多个 AI 提供商，运行时通过飞书命令 `/provider` 切换：
 
-| 提供商 | AI_BASE_URL | 模型示例 |
-|--------|------------|---------|
+```env
+# .env 示例
+AI_PROVIDERS=deepseek,openai,siliconflow
+
+AI_DEEPSEEK_URL=https://api.deepseek.com
+AI_DEEPSEEK_KEY=sk-xxx
+AI_DEEPSEEK_MODEL=deepseek-chat
+
+AI_OPENAI_URL=https://api.openai.com
+AI_OPENAI_KEY=sk-xxx
+AI_OPENAI_MODEL=gpt-4o
+
+AI_SILICONFLOW_URL=https://api.siliconflow.cn
+AI_SILICONFLOW_KEY=sk-xxx
+AI_SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V3
+```
+
+兼容的 OpenAI 协议 API 提供商:
+
+| 提供商 | URL | 模型示例 |
+|--------|-----|---------|
 | DeepSeek | `https://api.deepseek.com` | `deepseek-chat` |
 | OpenAI | `https://api.openai.com` | `gpt-4o` |
 | SiliconFlow | `https://api.siliconflow.cn` | `deepseek-ai/DeepSeek-V3` |
 | Groq | `https://api.groq.com/openai` | `llama-3.3-70b-versatile` |
 | Ollama | `http://localhost:11434` | `llama3` |
+
+> 向后兼容：如果不设置 `AI_PROVIDERS`，仍可使用旧的 `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` 单一配置。
 
 ## 使用
 
@@ -80,7 +101,9 @@ pm2 save
 - **Tron**: T 开头地址
 - `/help` - 帮助
 - `/status` - 服务状态
-- `/models` - 可用模型列表
+- `/providers` - 查看已配置的 AI 提供商
+- `/provider <name>` - 切换 AI 提供商
+- `/models` - 查看当前提供商可用模型
 - `/model <name>` - 切换 AI 模型
 - `/ask <问题>` - 与 AI 对话
 
