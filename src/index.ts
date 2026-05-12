@@ -1,6 +1,6 @@
 import * as lark from '@larksuiteoapi/node-sdk';
 import axios from 'axios';
-import { config, modelManager, aiConfig } from './config';
+import { config, modelManager } from './config';
 import { FeishuService } from './services/feishu';
 import { ContractAnalyzer } from './services/analyzer';
 import { DeepSeekService } from './services/deepseek';
@@ -305,7 +305,7 @@ function startWSClient() {
   const wsClient = new lark.WSClient({
     appId: config.feishu.appId,
     appSecret: config.feishu.appSecret,
-    loggerLevel: lark.LoggerLevel.INFO,
+    loggerLevel: lark.LoggerLevel.info,
   });
 
   wsClient.start({ eventDispatcher } as any);
