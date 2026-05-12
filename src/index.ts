@@ -147,20 +147,8 @@ async function handleCommand(content: string, messageId: string, _chatId: string
     case '/status':
       try {
         const currentBaseUrl = modelManager.getBaseUrl().replace(/\/+$/, '');
-        const baseURL = currentBaseUrl.endsWith('/v1')
-          ? currentBaseUrl
-          : `${currentBaseUrl}/v1`;
-        const today = new Date();
-        const startDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
-        const endDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-
-        const [usageRes] = await Promise.allSettled([
-          axios.get(`${baseURL}/dashboard/billing/usage`, {
-            headers: { Authorization: `Bearer ${modelManager.getApiKey()}` },
-            params: { start_date: startDate, end_date: endDate },
-            timeout: 8000,
-          }),
-        ]);
+        const apiKey = modelManager.getApiKey();
+        const authHeader = { Authorization: `Bearer ${apiKey}` };
 
         const uptime = Math.floor((Date.now() - modelManager.startedAt.getTime()) / 60000);
         const providerNames = modelManager.getProviderNames();
@@ -175,12 +163,57 @@ async function handleCommand(content: string, messageId: string, _chatId: string
           `⏱️ 运行时长: ${uptime >= 60 ? Math.floor(uptime / 60) + '小时' + (uptime % 60) + '分' : uptime + '分钟'}`,
         ];
 
-        if (usageRes.status === 'fulfilled') {
-          const usageCents = usageRes.value.data?.total_usage;
-          if (usageCents !== undefined) {
-            const usageYuan = Number(usageCents) / 100;
-            lines.push(`💰 本月已用: ¥${usageYuan.toFixed(4)}`);
+        // Try multiple billing/balance APIs in parallel
+        // 1. One API / New API style (DAPI etc.): GET /api/user/self
+        // 2. OpenAI style: GET /v1/dashboard/billing/usage
+        // 3. DeepSeek style: GET /user/balance
+        const baseURL = currentBaseUrl.endsWith('/v1') ? currentBaseUrl : `${currentBaseUrl}/v1`;
+        const today = new Date();
+        const startDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+        const endDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+        const [oneApiRes, openaiRes, deepseekRes] = await Promise.allSettled([
+          axios.get(`${currentBaseUrl}/api/user/self`, { headers: authHeader, timeout: 8000 }),
+          axios.get(`${baseURL}/dashboard/billing/usage`, { headers: authHeader, params: { start_date: startDate, end_date: endDate }, timeout: 8000 }),
+          axios.get(`${currentBaseUrl}/user/balance`, { headers: authHeader, timeout: 8000 }),
+        ]);
+
+        let balanceFound = false;
+
+        // One API / New API: response has quota and used_quota (in 1/500000 dollar units)
+        if (!balanceFound && oneApiRes.status === 'fulfilled' && oneApiRes.value.data?.success) {
+          const data = oneApiRes.value.data.data;
+          if (data?.quota !== undefined) {
+            const totalQuota = Number(data.quota) / 500000;
+            const usedQuota = Number(data.used_quota || 0) / 500000;
+            const remaining = totalQuota - usedQuota;
+            lines.push(`💰 余额: $${remaining.toFixed(4)} (已用: $${usedQuota.toFixed(4)} / 总额: $${totalQuota.toFixed(4)})`);
+            balanceFound = true;
           }
+        }
+
+        // DeepSeek: response has balance_infos array
+        if (!balanceFound && deepseekRes.status === 'fulfilled') {
+          const balances = deepseekRes.value.data?.balance_infos;
+          if (Array.isArray(balances) && balances.length > 0) {
+            const total = balances.reduce((sum: number, b: any) => sum + Number(b.total_balance || 0), 0);
+            lines.push(`💰 余额: ¥${total.toFixed(4)}`);
+            balanceFound = true;
+          }
+        }
+
+        // OpenAI: response has total_usage in cents
+        if (!balanceFound && openaiRes.status === 'fulfilled') {
+          const usageCents = openaiRes.value.data?.total_usage;
+          if (usageCents !== undefined) {
+            const usageDollars = Number(usageCents) / 100;
+            lines.push(`💰 本月消耗: $${usageDollars.toFixed(4)}`);
+            balanceFound = true;
+          }
+        }
+
+        if (!balanceFound) {
+          lines.push(`💰 余额查询: 当前提供商不支持余额查询接口`);
         }
 
         await feishu.replyText(messageId, lines.join('\n'));
@@ -191,7 +224,7 @@ async function handleCommand(content: string, messageId: string, _chatId: string
           `🏢 当前提供商: ${modelManager.getCurrentProviderName()}`,
           `🤖 当前模型: ${modelManager.getModel()}`,
           `🔗 API: ${modelManager.getBaseUrl()}`,
-          `💰 计费查询失败: ${error?.message || 'unknown'}`,
+          `💰 状态查询异常: ${error?.message || 'unknown'}`,
         ].join('\n'));
       }
       break;
