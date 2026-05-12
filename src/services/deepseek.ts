@@ -2,14 +2,27 @@ import axios, { AxiosInstance } from 'axios';
 import { modelManager, aiConfig } from '../config';
 import { ContractAnalysis } from '../types';
 
-// Create client dynamically based on current provider
+// Thinking/reasoning models that need longer timeouts and no retries
+const THINKING_MODEL_PATTERNS = [
+  'thinking', 'reason', 'o1', 'o3', 'o4-mini',
+  'deepseek-reasoner', 'r1',
+];
+
+function isThinkingModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  return THINKING_MODEL_PATTERNS.some(p => lower.includes(p));
+}
+
+// Create client dynamically based on current provider and model
 function createClient(): AxiosInstance {
   // Strip trailing slashes to avoid double-slash issues (e.g. https://example.com//v1)
   const rawUrl = modelManager.getBaseUrl().replace(/\/+$/, '');
   const baseURL = rawUrl.endsWith('/v1') ? rawUrl : `${rawUrl}/v1`;
+  // Thinking models need much longer timeout (5 min vs 90s)
+  const timeout = isThinkingModel(modelManager.getModel()) ? 300000 : 90000;
   const instance = axios.create({
     baseURL,
-    timeout: 90000,
+    timeout,
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${modelManager.getApiKey()}`,
@@ -25,10 +38,14 @@ function getClient(): AxiosInstance {
 
 /**
  * Retry wrapper for API calls
+ * Thinking models skip retries (they are slow by nature, retrying wastes time and money)
  */
 async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 2, delayMs: number = 2000): Promise<T> {
+  const thinking = isThinkingModel(modelManager.getModel());
+  const effectiveRetries = thinking ? 0 : maxRetries;
+
   let lastError: any;
-  for (let i = 0; i <= maxRetries; i++) {
+  for (let i = 0; i <= effectiveRetries; i++) {
     try {
       return await fn();
     } catch (error: any) {
@@ -38,9 +55,9 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 2, delayM
       if (status && status >= 400 && status < 500 && status !== 429) {
         throw error;
       }
-      if (i < maxRetries) {
+      if (i < effectiveRetries) {
         const wait = delayMs * (i + 1); // Linear backoff
-        console.log(`[DeepSeek] Retry ${i + 1}/${maxRetries} after ${wait}ms...`);
+        console.log(`[DeepSeek] Retry ${i + 1}/${effectiveRetries} after ${wait}ms...`);
         await new Promise(resolve => setTimeout(resolve, wait));
       }
     }
@@ -86,7 +103,8 @@ export class DeepSeekService {
     }
 
     const currentModel = modelManager.getModel();
-    console.log(`[DeepSeek] Chat request, model: ${currentModel}, msg length: ${message.length}`);
+    const thinking = isThinkingModel(currentModel);
+    console.log(`[DeepSeek] Chat request, model: ${currentModel}, msg length: ${message.length}, thinking: ${thinking}, timeout: ${thinking ? '300s' : '90s'}`);
 
     try {
       modelManager.trackCall();
@@ -126,7 +144,8 @@ export class DeepSeekService {
 
     const prompt = this.buildPrompt(analysis);
     const currentModel = modelManager.getModel();
-    console.log(`[DeepSeek] Analyzing contract, prompt length: ${prompt.length} chars, model: ${currentModel}`);
+    const thinking = isThinkingModel(currentModel);
+    console.log(`[DeepSeek] Analyzing contract, prompt length: ${prompt.length} chars, model: ${currentModel}, thinking: ${thinking}, timeout: ${thinking ? '300s' : '90s'}, retries: ${thinking ? 0 : 2}`);
 
     try {
       modelManager.trackCall();
