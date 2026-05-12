@@ -59,6 +59,53 @@ async function handleCommand(content: string, messageId: string, _chatId: string
     return;
   }
 
+  if (cmd.startsWith('/addprovider ')) {
+    // Format: /addprovider <name> <url> <key> [default_model]
+    const args = trimmed.slice('/addprovider '.length).trim().split(/\s+/);
+    if (args.length < 3) {
+      await feishu.replyText(messageId, [
+        '用法: /addprovider <名称> <URL> <Key> [默认模型]',
+        '',
+        '示例:',
+        '/addprovider groq https://api.groq.com/openai sk-xxx llama-3.3-70b-versatile',
+        '/addprovider openai https://api.openai.com sk-xxx gpt-4o',
+      ].join('\n'));
+      return;
+    }
+    const [name, url, key, ...modelParts] = args;
+    const defaultModel = modelParts.join(' ') || '';
+    const success = modelManager.addProvider({ name, baseUrl: url, apiKey: key, defaultModel });
+    if (success) {
+      await feishu.replyText(messageId, [
+        `✅ 提供商已添加`,
+        '',
+        `名称: ${name}`,
+        `URL: ${url}`,
+        `默认模型: ${defaultModel || '(未设置)'}`,
+        '',
+        `使用 /provider ${name} 切换到该提供商`,
+      ].join('\n'));
+    } else {
+      await feishu.replyText(messageId, `❌ 添加失败：提供商 "${name}" 已存在`);
+    }
+    return;
+  }
+
+  if (cmd.startsWith('/delprovider ')) {
+    const name = trimmed.slice('/delprovider '.length).trim();
+    if (!name) {
+      await feishu.replyText(messageId, '用法: /delprovider <提供商名称>');
+      return;
+    }
+    const result = modelManager.removeProvider(name);
+    if (result.success) {
+      await feishu.replyText(messageId, `✅ 提供商 "${name}" 已删除`);
+    } else {
+      await feishu.replyText(messageId, `❌ 删除失败：${result.reason}`);
+    }
+    return;
+  }
+
   if (cmd.startsWith('/model ')) {
     const newModel = trimmed.slice('/model '.length).trim();
     if (!newModel) {
@@ -89,6 +136,8 @@ async function handleCommand(content: string, messageId: string, _chatId: string
         '/status - 服务状态',
         '/providers - 查看已配置的AI提供商',
         '/provider <name> - 切换AI提供商',
+        '/addprovider <名称> <URL> <Key> [模型] - 添加提供商',
+        '/delprovider <name> - 删除提供商',
         '/models - 查看当前提供商可用模型',
         '/model <name> - 切换AI模型',
         '/ask <问题> - 直接与AI对话',
@@ -250,6 +299,8 @@ async function handleMessage(data: any) {
       const isCommand = knownCommands.includes(lowerContent)
         || lowerContent.startsWith('/model ') || lowerContent.startsWith('model ')
         || lowerContent.startsWith('/provider ') || lowerContent.startsWith('provider ')
+        || lowerContent.startsWith('/addprovider ') || lowerContent.startsWith('addprovider ')
+        || lowerContent.startsWith('/delprovider ') || lowerContent.startsWith('delprovider ')
         || lowerContent.startsWith('/ask ') || lowerContent.startsWith('ask ');
       if (isCommand) {
         const cmd = content.startsWith('/') ? content : '/' + content;

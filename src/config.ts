@@ -154,6 +154,36 @@ class AIProviderManager {
     return true;
   }
 
+  /**
+   * Add a new provider at runtime.
+   * Returns false if a provider with the same name already exists.
+   */
+  addProvider(provider: AIProvider): boolean {
+    const exists = this.providers.some(p => p.name.toLowerCase() === provider.name.toLowerCase());
+    if (exists) return false;
+    this.providers.push(provider);
+    console.log(`[AIManager] Provider added: ${provider.name} (${provider.baseUrl})`);
+    return true;
+  }
+
+  /**
+   * Remove a provider by name.
+   * Cannot remove the currently active provider.
+   * Returns true if removed, false if not found or is active.
+   */
+  removeProvider(name: string): { success: boolean; reason?: string } {
+    const idx = this.providers.findIndex(p => p.name.toLowerCase() === name.toLowerCase());
+    if (idx === -1) return { success: false, reason: '未找到该提供商' };
+    if (idx === this.currentProviderIndex) return { success: false, reason: '不能删除当前正在使用的提供商' };
+    this.providers.splice(idx, 1);
+    // Adjust currentProviderIndex if needed
+    if (this.currentProviderIndex > idx) {
+      this.currentProviderIndex--;
+    }
+    console.log(`[AIManager] Provider removed: ${name}`);
+    return { success: true };
+  }
+
   // --- Model management ---
 
   getModel(): string {
