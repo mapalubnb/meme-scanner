@@ -27,7 +27,7 @@ export const config = {
 
 // ===== Load AI Providers from env =====
 // Placeholder patterns that should be treated as "not configured"
-const PLACEHOLDER_KEYS = ['sk-xxxxxxxxxx', 'sk-xxx', 'your_api_key_here', 'your_deepseek_api_key_here', ''];
+const PLACEHOLDER_KEYS = ['sk-xxxxxxxxxx', 'sk-xxx', 'your_api_key_here', 'your_deepseek_api_key_here', 'your_ai_api_key_here', ''];
 
 function isValidKey(key: string | undefined): boolean {
   if (!key) return false;
@@ -39,7 +39,7 @@ function loadAIProviders(): AIProvider[] {
   const providerList = process.env.AI_PROVIDERS;
 
   if (providerList) {
-    // Multi-provider mode: AI_PROVIDERS=deepseek,openai,siliconflow
+    // Multi-provider mode: AI_PROVIDERS=dapi,openai,siliconflow
     const names = providerList.split(',').map(s => s.trim()).filter(Boolean);
     for (const name of names) {
       const upper = name.toUpperCase();
@@ -57,7 +57,7 @@ function loadAIProviders(): AIProvider[] {
   // Fallback: legacy single-provider config
   if (providers.length === 0) {
     const apiKey = process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || '';
-    const baseUrl = process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
+    const baseUrl = process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL || 'https://dapicloud.com';
     const model = process.env.AI_MODEL || process.env.DEEPSEEK_MODEL || 'deepseek-chat';
     if (isValidKey(apiKey)) {
       providers.push({ name: 'default', baseUrl, apiKey, defaultModel: model });
@@ -203,10 +203,10 @@ class AIProviderManager {
     console.log(`[AIManager] Model switched to: ${model}`);
   }
 
-  // --- Current AI config (used by DeepSeekService) ---
+  // --- Current AI config (used by AIService) ---
 
   getBaseUrl(): string {
-    const url = this.getCurrentProvider()?.baseUrl || 'https://api.deepseek.com';
+    const url = this.getCurrentProvider()?.baseUrl || 'https://dapicloud.com';
     // Strip trailing slashes to prevent double-slash in URL concatenation
     return url.replace(/\/+$/, '');
   }

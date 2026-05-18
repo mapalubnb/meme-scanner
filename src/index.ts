@@ -3,12 +3,12 @@ import axios from 'axios';
 import { config, modelManager } from './config';
 import { FeishuService } from './services/feishu';
 import { ContractAnalyzer } from './services/analyzer';
-import { DeepSeekService } from './services/deepseek';
+import { AIService } from './services/ai';
 import { extractAddresses, autoDetectEVMChain } from './utils/chainDetector';
 
 const feishu = new FeishuService();
 const analyzer = new ContractAnalyzer();
-const deepseek = new DeepSeekService();
+const ai = new AIService();
 
 // Dedup: avoid processing same message twice
 const processedMessages = new Set<string>();
@@ -27,7 +27,7 @@ async function handleCommand(content: string, messageId: string, _chatId: string
       return;
     }
     try {
-      const reply = await deepseek.chat(question);
+      const reply = await ai.chat(question);
       await feishu.replyText(messageId, reply);
     } catch (error: any) {
       await feishu.replyText(messageId, `❌ AI回复失败: ${error?.message || error}`);
@@ -166,13 +166,13 @@ async function handleCommand(content: string, messageId: string, _chatId: string
         // Try multiple billing/balance APIs in parallel
         // 1. One API / New API style (DAPI etc.): GET /api/user/self
         // 2. OpenAI style: GET /v1/dashboard/billing/usage
-        // 3. DeepSeek style: GET /user/balance
+        // 3. Balance info style: GET /user/balance
         const baseURL = currentBaseUrl.endsWith('/v1') ? currentBaseUrl : `${currentBaseUrl}/v1`;
         const today = new Date();
         const startDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
         const endDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-        const [oneApiRes, openaiRes, deepseekRes] = await Promise.allSettled([
+        const [oneApiRes, openaiRes, balanceRes] = await Promise.allSettled([
           axios.get(`${currentBaseUrl}/api/user/self`, { headers: authHeader, timeout: 8000 }),
           axios.get(`${baseURL}/dashboard/billing/usage`, { headers: authHeader, params: { start_date: startDate, end_date: endDate }, timeout: 8000 }),
           axios.get(`${currentBaseUrl}/user/balance`, { headers: authHeader, timeout: 8000 }),
@@ -192,9 +192,9 @@ async function handleCommand(content: string, messageId: string, _chatId: string
           }
         }
 
-        // DeepSeek: response has balance_infos array
-        if (!balanceFound && deepseekRes.status === 'fulfilled') {
-          const balances = deepseekRes.value.data?.balance_infos;
+        // Balance info: response has balance_infos array
+        if (!balanceFound && balanceRes.status === 'fulfilled') {
+          const balances = balanceRes.value.data?.balance_infos;
           if (Array.isArray(balances) && balances.length > 0) {
             const total = balances.reduce((sum: number, b: any) => sum + Number(b.total_balance || 0), 0);
             lines.push(`💰 余额: ¥${total.toFixed(4)}`);
@@ -258,7 +258,7 @@ async function handleCommand(content: string, messageId: string, _chatId: string
     case '/models':
       try {
         await feishu.replyText(messageId, '⏳ 正在获取模型列表...');
-        const models = await deepseek.listModels();
+        const models = await ai.listModels();
         if (models.length === 0) {
           await feishu.replyText(messageId, '❌ 未获取到模型列表');
         } else {

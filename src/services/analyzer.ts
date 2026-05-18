@@ -7,7 +7,7 @@ import { RugCheckService } from './rugcheck';
 import { EtherscanService } from './etherscan';
 import { LaunchpadService } from './launchpad';
 import { MoralisService } from './moralis';
-import { DeepSeekService } from './deepseek';
+import { AIService } from './ai';
 
 export class ContractAnalyzer {
   private gecko: GeckoTerminalService;
@@ -17,7 +17,7 @@ export class ContractAnalyzer {
   private etherscan: EtherscanService;
   private launchpad: LaunchpadService;
   private moralis: MoralisService;
-  private deepseek: DeepSeekService;
+  private ai: AIService;
 
   constructor() {
     this.gecko = new GeckoTerminalService();
@@ -27,7 +27,7 @@ export class ContractAnalyzer {
     this.etherscan = new EtherscanService();
     this.launchpad = new LaunchpadService();
     this.moralis = new MoralisService(config.moralis.apiKey);
-    this.deepseek = new DeepSeekService();
+    this.ai = new AIService();
   }
 
   /**
@@ -172,10 +172,10 @@ export class ContractAnalyzer {
    */
   async analyzeAI(result: ContractAnalysis): Promise<string> {
     try {
-      const aiResult = await this.deepseek.analyzeContract(result);
+      const aiResult = await this.ai.analyzeContract(result);
       return aiResult;
     } catch (error) {
-      console.error('[Analyzer] DeepSeek error:', error);
+      console.error('[Analyzer] AI analysis error:', error);
       return '分析暂时不可用';
     }
   }

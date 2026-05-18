@@ -81,7 +81,7 @@ async function withRetry<T>(fn: () => Promise<T>, maxRetries: number = 1, delayM
   throw lastError;
 }
 
-export class DeepSeekService {
+export class AIService {
   /**
    * List available models from the API provider
    */
@@ -214,7 +214,15 @@ export class DeepSeekService {
     } catch (error: any) {
       const status = error?.response?.status;
       const errData = error?.response?.data;
-      console.error(`${logTag()} Error (status=${status}):`, JSON.stringify(errData || error.message).slice(0, 500));
+      // Safe stringify: errData may be a Stream object with circular references (e.g. when using responseType: 'stream')
+      const logData = (() => {
+        try {
+          return JSON.stringify(errData || error.message).slice(0, 500);
+        } catch {
+          return error?.message || 'Unknown error (circular ref in response)';
+        }
+      })();
+      console.error(`${logTag()} Error (status=${status}):`, logData);
 
       if (status === 401) return 'AI分析不可用：API Key 无效';
       if (status === 429) return 'AI分析不可用：请求频率超限，稍后重试';
