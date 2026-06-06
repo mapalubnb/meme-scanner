@@ -206,7 +206,7 @@ export class EtherscanService {
       if (typeof code !== 'string') return null;
       return code !== '0x' && code !== '0x0';
     } catch (error: any) {
-      console.error('[Etherscan] isContractAddress error:', error?.message || error);
+      console.warn('[Etherscan] isContractAddress unavailable:', error?.message || error);
       return null;
     }
   }

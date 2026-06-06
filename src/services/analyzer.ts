@@ -318,8 +318,13 @@ export class ContractAnalyzer {
         result.liquidity = topPool.attributes?.reserve_in_usd;
         result.poolCreatedAt = topPool.attributes?.pool_created_at;
       }
-    } catch (error) {
-      console.error('[Analyzer] GeckoTerminal error, falling back to DexScreener:', error);
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 404) {
+        console.log(`[Analyzer] GeckoTerminal token data not found for ${chain}:${address}, falling back to DexScreener/generic contract analysis`);
+      } else {
+        console.warn('[Analyzer] GeckoTerminal error, falling back to DexScreener:', error?.message || error);
+      }
     }
 
     // Always fetch DexScreener for trading metrics (and as fallback for basic data)
@@ -356,9 +361,9 @@ export class ContractAnalyzer {
         // Store trading metrics
         result.rawData = { ...result.rawData, dexscreener: this.extractDexMetrics(dexData) };
       }
-    } catch (error) {
+    } catch (error: any) {
       if (!dataFetched) {
-        console.error('[Analyzer] DexScreener error:', error);
+        console.warn('[Analyzer] DexScreener error:', error?.message || error);
       }
       // Non-critical if GeckoTerminal already provided data
     }
