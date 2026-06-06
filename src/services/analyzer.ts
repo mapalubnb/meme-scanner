@@ -36,7 +36,8 @@ export class ContractAnalyzer {
    */
   async analyzeData(chain: Chain, address: string): Promise<ContractAnalysis> {
     console.log(`[Analyzer] Starting data collection: ${chain}:${address}`);
-    const result: ContractAnalysis = { chain, address };
+    const result: ContractAnalysis = { chain, address, analysisType: 'unknown' };
+    const isEVM = chain !== 'solana' && chain !== 'tron';
 
     // Step 1: Market data (GeckoTerminal primary, DexScreener fallback)
     await this.fetchMarketData(chain, address, result);
@@ -48,9 +49,10 @@ export class ContractAnalyzer {
     await this.fetchHolderData(chain, address, result);
 
     // Step 4: Launchpad detection + deployment time (parallel)
-    const [launchpadResult, deployTime] = await Promise.allSettled([
+    const [launchpadResult, deployTime, contractCheck] = await Promise.allSettled([
       this.launchpad.detectLaunchpad(chain, address),
-      (chain !== 'solana' && chain !== 'tron') ? this.etherscan.getDeploymentTime(chain, address) : Promise.resolve(null),
+      isEVM ? this.etherscan.getDeploymentTime(chain, address) : Promise.resolve(null),
+      isEVM ? this.etherscan.isContractAddress(chain, address) : Promise.resolve(null),
     ]);
 
     if (launchpadResult.status === 'fulfilled' && launchpadResult.value) {
@@ -59,9 +61,12 @@ export class ContractAnalyzer {
     if (deployTime.status === 'fulfilled' && deployTime.value) {
       result.deployedAt = deployTime.value;
     }
+    if (contractCheck.status === 'fulfilled' && typeof contractCheck.value === 'boolean') {
+      result.isContract = contractCheck.value;
+    }
 
     // Step 4.5: Token image & socials fallback
-    if (!result.tokenImageUrl && chain !== 'solana' && chain !== 'tron') {
+    if (!result.tokenImageUrl && isEVM) {
       try {
         const logo = await this.moralis.getTokenLogo(chain, address);
         if (logo) result.tokenImageUrl = logo;
@@ -93,11 +98,14 @@ export class ContractAnalyzer {
     }
 
     // Step 5: Contract source (EVM only)
-    if (chain !== 'solana' && chain !== 'tron') {
+    if (isEVM) {
       try {
         const source = await this.etherscan.getContractSource(chain, address);
         if (source) {
           result.contractSource = source;
+          if (source.isVerified || result.isContract === undefined) {
+            result.isContract = true;
+          }
 
           // Step 5.5: Tax distribution analysis (only if token has tax)
           const buyTax = parseFloat(result.security?.buyTax || '0');
@@ -122,7 +130,7 @@ export class ContractAnalyzer {
     }
 
     // Step 6: Ownership renounce verification + LP lock check (EVM only, parallel)
-    if (chain !== 'solana' && chain !== 'tron') {
+    if (isEVM) {
       try {
         const ownerAddr = result.security?.ownerAddress;
         const isZeroOwner = ownerAddr === '0x0000000000000000000000000000000000000000';
@@ -163,6 +171,7 @@ export class ContractAnalyzer {
       }
     }
 
+    this.finalizeAnalysisType(result);
     console.log(`[Analyzer] Data collection complete: ${chain}:${address}`);
     return result;
   }
@@ -178,6 +187,78 @@ export class ContractAnalyzer {
       console.error('[Analyzer] AI analysis error:', error);
       return '分析暂时不可用';
     }
+  }
+
+  private finalizeAnalysisType(result: ContractAnalysis) {
+    const tokenSignals = this.hasTokenSignals(result);
+    if (tokenSignals) {
+      result.analysisType = 'token';
+      result.isContract = true;
+    } else if (result.isContract || result.contractSource) {
+      result.analysisType = 'contract';
+    } else {
+      result.analysisType = 'unknown';
+    }
+
+    result.contractKind = this.inferContractKind(result);
+  }
+
+  private hasTokenSignals(result: ContractAnalysis): boolean {
+    return Boolean(
+      result.tokenName ||
+      result.tokenSymbol ||
+      result.priceUsd ||
+      result.marketCap ||
+      result.liquidity ||
+      result.volume24h ||
+      result.poolCreatedAt ||
+      result.tokenImageUrl ||
+      result.socials ||
+      this.hasTokenSecuritySignals(result.security) ||
+      result.rawData?.dexscreener ||
+      result.rawData?.rugcheck
+    );
+  }
+
+  private hasTokenSecuritySignals(security: ContractAnalysis['security']): boolean {
+    if (!security) return false;
+
+    const buyTax = parseFloat(security.buyTax || '0');
+    const sellTax = parseFloat(security.sellTax || '0');
+
+    return Boolean(
+      security.holderCount ||
+      security.topHolders?.length ||
+      security.lpHolders?.length ||
+      buyTax > 0 ||
+      sellTax > 0 ||
+      security.isHoneypot ||
+      security.cannotSellAll ||
+      security.tradingCooldown ||
+      security.antiWhale
+    );
+  }
+
+  private inferContractKind(result: ContractAnalysis): string {
+    if (!result.contractSource?.contractFunctions?.length) {
+      if (result.analysisType === 'token') return '代币合约';
+      if (result.analysisType === 'contract') return result.contractSource?.isVerified ? '通用合约' : '未验证合约';
+      return '未知地址';
+    }
+
+    const names = new Set(result.contractSource.contractFunctions.map(f => f.name.toLowerCase()));
+    const hasAll = (required: string[]) => required.every(name => names.has(name.toLowerCase()));
+    const hasAny = (patterns: RegExp[]) => [...names].some(name => patterns.some(pattern => pattern.test(name)));
+
+    if (hasAll(['totalSupply', 'balanceOf', 'transfer', 'approve', 'transferFrom'])) return 'ERC20代币合约';
+    if (hasAll(['ownerOf', 'tokenURI']) || hasAny([/^safetransferfrom$/, /^setapprovalforall$/])) return 'NFT合约';
+    if (hasAll(['token0', 'token1', 'getReserves'])) return 'DEX交易对合约';
+    if (hasAny([/^swapExact/i, /^addLiquidity/i, /^removeLiquidity/i])) return 'DEX路由合约';
+    if (hasAny([/deposit/i, /withdraw/i, /stake/i, /unstake/i, /claim/i, /reward/i])) return '质押/收益合约';
+    if (hasAny([/borrow/i, /repay/i, /liquidat/i, /collateral/i])) return '借贷合约';
+    if (result.contractSource.isProxy) return '代理合约';
+    if (result.analysisType === 'token') return '代币合约';
+    return '通用合约';
   }
 
   /**

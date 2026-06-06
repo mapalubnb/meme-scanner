@@ -165,33 +165,34 @@ export class AIService {
     const timeout = getTimeout();
     console.log(`${logTag()} Analyzing contract, prompt length: ${prompt.length} chars, model: ${currentModel}, thinking: ${thinking}, timeout: ${timeout / 1000}s, retries: ${thinking ? 0 : 1}`);
 
-    const systemPrompt = `你是一个专业的链上memecoin合约审计师和代币分析师。你的任务是根据提供的合约源码和链上数据，全面分析这个代币合约。
+    const systemPrompt = `你是一个专业的链上智能合约审计师。你的任务是根据提供的合约源码、ABI和链上数据，客观分析这个地址对应的合约。它可能是代币合约，也可能是路由、交易对、质押、借贷、代理、金库、权限管理或其他任意智能合约。
 
 输出格式要求（严格按此格式）：
 
-📌 代币概述：这是什么类型的代币，核心机制是什么（如标准ERC20、带税代币、通缩代币、rebase代币等），是否来自发射台（如有发射台信息，说明该台子的特点和对代币安全性的影响）
+📌 合约概述：这是什么类型的合约，核心用途和资金/权限流是什么。如果它是代币，再说明代币机制（如标准ERC20、带税代币、NFT、通缩、rebase等）和发射台来源。
 
 ⚙️ 合约功能：
-• [列出合约实现的核心功能，如：买卖税收、黑名单、最大持仓限制、自动LP、分红等]
+• [列出合约实现的核心功能。代币合约关注买卖税、黑名单、最大持仓、自动LP、分红等；通用合约关注存取款、交换、质押、借贷、管理权限、升级、资金转移等]
 
-💸 税收分析（如果代币有买卖税）：
-• 税率结构：分别列出买入税和卖出税的各项组成
-• 税收去向：每项税收流向哪里（营销钱包、开发者钱包、自动加池、销毁、持有者分红、回购等），给出具体钱包地址（如果源码中有）
-• 税收用途评估：这些税收去向是否合理？是否存在开发者可以随意提取大量资金的风险？
-• 可修改性：Owner是否能修改税率或更换接收钱包？最高可设置到多少？
+💸 资金/费用分析：
+• 如果是代币税收，列出买卖税率、税收去向和可修改性
+• 如果是通用合约，分析 ETH/代币/LP/NFT 等资产如何进入、转出、提取、清算或授权
+• 判断是否存在管理员可任意提取、转走、冻结、升级或改变关键参数的风险
 
 ⚠️ 风险等级：高/中/低
 
 🚨 风险点：
-• [列出所有检测到的安全风险，包括Owner权限、可修改参数、后门函数等]
+• [列出所有检测到的安全风险，包括Owner/Admin权限、可升级代理、可修改参数、提现/清算/黑名单/暂停/铸造/低级call/后门函数等]
 
 ✅ 安全特征：
-• [列出正面的安全特征，如Owner已放弃、税率不可修改、无黑名单等]
+• [列出正面的安全特征，如源码已验证、权限受限、无高危写入函数、Owner已放弃、税率不可修改、无黑名单等]
 
 💡 总结：2-3句话概括该合约的安全性和功能特点
 
 规则：
-- 如果有源码，重点分析源码中的逻辑，特别关注税收相关的_transfer函数
+- 如果有源码，优先依据源码和ABI，不要臆测
+- 如果是代币，重点关注_transfer、税收、黑名单、交易限制、owner权限
+- 如果不是代币，重点关注权限控制、资产流转、升级能力、外部调用、提现/救援函数和可变参数
 - 不要给出是否适合入场/交易的建议
 - 只做技术层面的客观分析
 - 使用中文
@@ -398,9 +399,18 @@ export class AIService {
    * Build comprehensive prompt including all collected data and full source code
    */
   private buildPrompt(analysis: ContractAnalysis): string {
-    let prompt = `=== 代币基本信息 ===\n`;
+    const isTokenAnalysis = analysis.analysisType === 'token';
+    let prompt = `=== 合约基本信息 ===\n`;
     prompt += `链: ${analysis.chain}\n`;
     prompt += `合约地址: ${analysis.address}\n`;
+    prompt += `分析类型: ${isTokenAnalysis ? '代币合约' : (analysis.analysisType === 'contract' ? '通用智能合约' : '未知地址')}\n`;
+    if (analysis.contractKind) prompt += `合约类型判断: ${analysis.contractKind}\n`;
+    if (analysis.isContract !== undefined) prompt += `链上代码检测: ${analysis.isContract ? '该地址有合约代码' : '未检测到合约代码'}\n`;
+    if (analysis.contractSource?.contractName) prompt += `合约名: ${analysis.contractSource.contractName}\n`;
+    if (analysis.contractSource?.isProxy) {
+      prompt += `代理合约: 是\n`;
+      if (analysis.contractSource.implementationAddress) prompt += `实现合约: ${analysis.contractSource.implementationAddress}\n`;
+    }
     if (analysis.tokenName) prompt += `代币名: ${analysis.tokenName} (${analysis.tokenSymbol})\n`;
     if (analysis.priceUsd) prompt += `价格: $${analysis.priceUsd}\n`;
     if (analysis.marketCap) prompt += `市值: $${analysis.marketCap}\n`;
@@ -427,7 +437,7 @@ export class AIService {
         prompt += `置信度: ${analysis.launchpad.confidence}%\n`;
         prompt += `说明: 该代币通过发射台创建，请结合该发射台的机制特点进行分析（如bonding_curve类台子通常无预售、流动性自动添加；presale类台子需关注解锁时间等）\n`;
       } else {
-        prompt += `该代币非发射台创建（独立部署合约）\n`;
+        prompt += `未检测到发射台来源\n`;
       }
     }
 

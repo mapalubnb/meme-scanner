@@ -418,6 +418,8 @@ export class FeishuService {
     const riskColor = this.getRiskColor(analysis);
     const elements: any[] = [];
     const dx = analysis.rawData?.dexscreener;
+    const isTokenAnalysis = analysis.analysisType === 'token';
+    const hasMarketData = Boolean(analysis.priceUsd || analysis.marketCap || analysis.liquidity || analysis.volume24h || dx);
 
     // ═══════════════════════════════════════
     // 📋 基本信息
@@ -427,18 +429,35 @@ export class FeishuService {
     };
     const emoji = chainEmoji[analysis.chain] || '⬜';
 
-    const contractUrl = this.getTokenExplorerUrl(analysis.chain, analysis.address);
+    const contractUrl = isTokenAnalysis
+      ? this.getTokenExplorerUrl(analysis.chain, analysis.address)
+      : this.getExplorerUrl(analysis.chain, analysis.address);
     let imageStatus = '';
-    if (!tokenImgKey) {
+    if (isTokenAnalysis && !tokenImgKey) {
       imageStatus = analysis.tokenImageUrl
         ? ` | [🖼️ 头像](${analysis.tokenImageUrl})`
         : ' | 🖼️ 头像未获取';
     }
 
+    const displayName = isTokenAnalysis
+      ? `${analysis.tokenName || 'Unknown'} (\`${analysis.tokenSymbol || '?'}\`)`
+      : `${analysis.contractSource?.contractName || analysis.contractKind || 'Unknown Contract'}`;
+    const typeLabel = isTokenAnalysis ? '代币合约' : (analysis.contractKind || '通用合约');
+
     const infoLines = [
-      `${emoji} **${analysis.chain.toUpperCase()}** | 🪙 **${analysis.tokenName || 'Unknown'}** (\`${analysis.tokenSymbol || '?'}\`)${imageStatus}`,
+      `${emoji} **${analysis.chain.toUpperCase()}** | ${isTokenAnalysis ? '🪙' : '🧩'} **${displayName}**${imageStatus}`,
       `📝 合约: [${analysis.address}](${contractUrl})`,
+      `📌 类型: **${typeLabel}**`,
     ];
+
+    if (analysis.contractSource?.isProxy && analysis.contractSource.implementationAddress) {
+      const implUrl = this.getExplorerUrl(analysis.chain, analysis.contractSource.implementationAddress);
+      infoLines.push(`🔄 代理实现: [${analysis.contractSource.implementationAddress.slice(0, 6)}...${analysis.contractSource.implementationAddress.slice(-4)}](${implUrl})`);
+    }
+
+    if (analysis.deployedAt) {
+      infoLines.push(`📅 部署: ${this.timeAgo(analysis.deployedAt)}`);
+    }
 
     // Social links
     if (analysis.socials) {
@@ -473,48 +492,50 @@ export class FeishuService {
     // ═══════════════════════════════════════
     // 💰 市场数据
     // ═══════════════════════════════════════
-    const priceStr = this.formatNumber(analysis.priceUsd);
-    const mcapStr = this.formatNumber(analysis.marketCap);
-    const liqStr = this.formatNumber(analysis.liquidity);
-    const vol24Str = this.formatNumber(analysis.volume24h);
+    if (hasMarketData) {
+      const priceStr = this.formatNumber(analysis.priceUsd);
+      const mcapStr = this.formatNumber(analysis.marketCap);
+      const liqStr = this.formatNumber(analysis.liquidity);
+      const vol24Str = this.formatNumber(analysis.volume24h);
 
-    const marketLines = ['💰 **市场数据**', ''];
-    marketLines.push(`💲 价格: **${priceStr}**`);
-    marketLines.push(`📊 市值: **${mcapStr}**`);
-    marketLines.push(`🏦 流动性: **${liqStr}**`);
-    marketLines.push(`📈 24h交易量: **${vol24Str}**`);
+      const marketLines = ['💰 **市场数据**', ''];
+      marketLines.push(`💲 价格: **${priceStr}**`);
+      marketLines.push(`📊 市值: **${mcapStr}**`);
+      marketLines.push(`🏦 流动性: **${liqStr}**`);
+      marketLines.push(`📈 24h交易量: **${vol24Str}**`);
 
-    if (dx?.priceNative && dx?.quoteTokenSymbol) {
-      marketLines.push(`💱 报价: ${dx.priceNative} ${dx.quoteTokenSymbol}`);
+      if (dx?.priceNative && dx?.quoteTokenSymbol) {
+        marketLines.push(`💱 报价: ${dx.priceNative} ${dx.quoteTokenSymbol}`);
+      }
+
+      // Price changes
+      if (dx) {
+        const changes: string[] = [];
+        if (dx.priceChange5m !== undefined) {
+          const e5 = dx.priceChange5m >= 0 ? '🟢' : '🔴';
+          changes.push(`${e5} 5m: ${dx.priceChange5m > 0 ? '+' : ''}${dx.priceChange5m}%`);
+        }
+        if (dx.priceChange1h !== undefined) {
+          const e1 = dx.priceChange1h >= 0 ? '🟢' : '🔴';
+          changes.push(`${e1} 1h: ${dx.priceChange1h > 0 ? '+' : ''}${dx.priceChange1h}%`);
+        }
+        if (dx.priceChange24h !== undefined) {
+          const e24 = dx.priceChange24h >= 0 ? '🟢' : '🔴';
+          changes.push(`${e24} 24h: ${dx.priceChange24h > 0 ? '+' : ''}${dx.priceChange24h}%`);
+        }
+        if (changes.length) {
+          marketLines.push('');
+          marketLines.push('📉 **涨跌幅:** ' + changes.join(' | '));
+        }
+      }
+
+      elements.push({
+        tag: 'div',
+        text: { tag: 'lark_md', content: marketLines.join('\n') },
+      });
+
+      elements.push({ tag: 'hr' });
     }
-
-    // Price changes
-    if (dx) {
-      const changes: string[] = [];
-      if (dx.priceChange5m !== undefined) {
-        const e5 = dx.priceChange5m >= 0 ? '🟢' : '🔴';
-        changes.push(`${e5} 5m: ${dx.priceChange5m > 0 ? '+' : ''}${dx.priceChange5m}%`);
-      }
-      if (dx.priceChange1h !== undefined) {
-        const e1 = dx.priceChange1h >= 0 ? '🟢' : '🔴';
-        changes.push(`${e1} 1h: ${dx.priceChange1h > 0 ? '+' : ''}${dx.priceChange1h}%`);
-      }
-      if (dx.priceChange24h !== undefined) {
-        const e24 = dx.priceChange24h >= 0 ? '🟢' : '🔴';
-        changes.push(`${e24} 24h: ${dx.priceChange24h > 0 ? '+' : ''}${dx.priceChange24h}%`);
-      }
-      if (changes.length) {
-        marketLines.push('');
-        marketLines.push('📉 **涨跌幅:** ' + changes.join(' | '));
-      }
-    }
-
-    elements.push({
-      tag: 'div',
-      text: { tag: 'lark_md', content: marketLines.join('\n') },
-    });
-
-    elements.push({ tag: 'hr' });
 
     // ═══════════════════════════════════════
     // 🏊 流动性池信息
@@ -578,7 +599,7 @@ export class FeishuService {
     // ═══════════════════════════════════════
     // 🚀 发射台
     // ═══════════════════════════════════════
-    if (analysis.launchpad) {
+    if (isTokenAnalysis && analysis.launchpad) {
       const lpContent = analysis.launchpad.isFromLaunchpad
         ? `🚀 **发射台:** ${analysis.launchpad.launchpadName} | 类型: ${analysis.launchpad.launchpadType} | 置信度: ${analysis.launchpad.confidence}%`
         : `🚀 **发射台:** 非台子发射（独立部署）`;
@@ -714,9 +735,17 @@ export class FeishuService {
       const funcLines = ['⚙️ **合约函数分析**', ''];
 
       if (!analysis.contractSource.isVerified) {
-        funcLines.push('❌ 合约未验证（无法获取源码和ABI）');
+        funcLines.push(analysis.isContract === false
+          ? '❌ 该地址未检测到合约代码，可能是普通钱包地址'
+          : '❌ 合约未验证（无法获取源码和ABI）');
       } else {
         funcLines.push(`✅ 合约已验证 | 📛 **${analysis.contractSource.contractName || '-'}**`);
+        if (analysis.contractSource.compilerVersion) {
+          funcLines.push(`🛠️ 编译器: ${analysis.contractSource.compilerVersion}`);
+        }
+        if (analysis.contractSource.isProxy && analysis.contractSource.implementationAddress) {
+          funcLines.push(`🔄 代理合约: 是`);
+        }
 
         const funcs = analysis.contractSource.contractFunctions || [];
         const allWriteFuncs = funcs.filter(f => f.stateMutability !== 'view' && f.stateMutability !== 'pure');
@@ -865,13 +894,13 @@ export class FeishuService {
     const header: any = {
       title: {
         tag: 'plain_text',
-        content: `🔬 合约分析 │ ${analysis.tokenSymbol || analysis.address.slice(0, 8)} │ ${analysis.chain.toUpperCase()}`,
+        content: `🔬 合约分析 │ ${analysis.tokenSymbol || analysis.contractSource?.contractName || analysis.address.slice(0, 8)} │ ${analysis.chain.toUpperCase()}`,
       },
       template: riskColor,
     };
 
     // Add token image to card body if available (small thumbnail via column_set)
-    if (tokenImgKey) {
+    if (isTokenAnalysis && tokenImgKey) {
       elements.unshift({
         tag: 'column_set',
         flex_mode: 'none',
@@ -923,23 +952,45 @@ export class FeishuService {
     if (sellTax > 10 || buyTax > 10) return 'red';
     if (sellTax > 5 || buyTax > 5) return 'orange';
     if (analysis.security?.isMintable || analysis.security?.hiddenOwner) return 'orange';
+    const funcs = analysis.contractSource?.contractFunctions || [];
+    if (funcs.some(f => f.riskLevel === 'high')) return 'red';
+    if (funcs.some(f => f.riskLevel === 'medium')) return 'orange';
+    if (analysis.isContract === false) return 'grey';
+    if (analysis.contractSource && !analysis.contractSource.isVerified) return 'orange';
     return 'green';
   }
 
   private buildTextResult(analysis: ContractAnalysis): string {
+    const isTokenAnalysis = analysis.analysisType === 'token';
+    const displayName = isTokenAnalysis
+      ? `${analysis.tokenName || 'Unknown'} (${analysis.tokenSymbol || '?'})`
+      : `${analysis.contractSource?.contractName || analysis.contractKind || 'Unknown Contract'}`;
     let text = `🔬 合约分析 │ ${analysis.chain.toUpperCase()}\n`;
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `🪙 ${analysis.tokenName || 'Unknown'} (${analysis.tokenSymbol || '?'})\n`;
+    text += `${isTokenAnalysis ? '🪙' : '🧩'} ${displayName}\n`;
     text += `📝 ${analysis.address}\n`;
+    text += `📌 类型: ${isTokenAnalysis ? '代币合约' : (analysis.contractKind || '通用合约')}\n`;
     text += `━━━━━━━━━━━━━━━━━━━━\n`;
-    text += `💲 价格: ${this.formatNumber(analysis.priceUsd)}\n`;
-    text += `📊 市值: ${this.formatNumber(analysis.marketCap)}\n`;
-    text += `🏦 流动性: ${this.formatNumber(analysis.liquidity)}\n`;
+    if (analysis.priceUsd || analysis.marketCap || analysis.liquidity) {
+      text += `💲 价格: ${this.formatNumber(analysis.priceUsd)}\n`;
+      text += `📊 市值: ${this.formatNumber(analysis.marketCap)}\n`;
+      text += `🏦 流动性: ${this.formatNumber(analysis.liquidity)}\n`;
+    }
 
     if (analysis.security) {
       text += `━━━━━━━━━━━━━━━━━━━━\n`;
       text += `🍯 蜜罐: ${analysis.security.isHoneypot ? '❌是' : '✅否'}\n`;
       text += `💸 税率: 买${analysis.security.buyTax}% / 卖${analysis.security.sellTax}%\n`;
+    }
+
+    if (analysis.contractSource) {
+      text += `━━━━━━━━━━━━━━━━━━━━\n`;
+      text += analysis.contractSource.isVerified
+        ? `✅ 合约已验证: ${analysis.contractSource.contractName || '-'}\n`
+        : `❌ 合约未验证或不是合约地址\n`;
+      const funcs = analysis.contractSource.contractFunctions || [];
+      const riskFuncs = funcs.filter(f => f.riskLevel === 'high' || f.riskLevel === 'medium');
+      text += `⚙️ 函数: ${funcs.length} | 风险函数: ${riskFuncs.length}\n`;
     }
 
     if (analysis.aiAnalysis) {

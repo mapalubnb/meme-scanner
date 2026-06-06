@@ -90,7 +90,12 @@ export class EtherscanService {
 
       if (!result || result.ABI === 'Contract source code not verified') {
         console.log(`[Etherscan V2] Contract not verified: ${address} on ${chain}`);
-        return { isVerified: false };
+        return {
+          isVerified: false,
+          contractName: result?.ContractName || undefined,
+          isProxy: result?.Proxy === '1',
+          implementationAddress: result?.Implementation || undefined,
+        };
       }
 
       // Some explorers return error messages in ABI field when API key is wrong
@@ -168,12 +173,40 @@ export class EtherscanService {
         sourceCode: flatSourceCode,
         compilerVersion: result.CompilerVersion,
         contractName: result.ContractName || 'Unknown',
+        isProxy: result.Proxy === '1',
+        implementationAddress: result.Implementation || undefined,
         abi: result.ABI,
         dangerousFunctions,
         contractFunctions,
       };
     } catch (error: any) {
       console.error('[Etherscan V2] getContractSource error:', error?.message || error);
+      return null;
+    }
+  }
+
+  /**
+   * Check whether an EVM address has runtime bytecode.
+   * This separates arbitrary contracts from EOAs when no token market data exists.
+   */
+  async isContractAddress(chain: Chain, address: string): Promise<boolean | null> {
+    const chainId = CHAIN_ID_MAP[chain];
+    if (!chainId) return null;
+
+    try {
+      const data = await this.requestV2({
+        chainid: chainId,
+        module: 'proxy',
+        action: 'eth_getCode',
+        address,
+        tag: 'latest',
+      }, 12000);
+
+      const code = data?.result;
+      if (typeof code !== 'string') return null;
+      return code !== '0x' && code !== '0x0';
+    } catch (error: any) {
+      console.error('[Etherscan] isContractAddress error:', error?.message || error);
       return null;
     }
   }

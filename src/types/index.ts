@@ -22,6 +22,9 @@ export interface TokenSocials {
 export interface ContractAnalysis {
   chain: Chain;
   address: string;
+  analysisType?: 'token' | 'contract' | 'unknown';
+  isContract?: boolean;
+  contractKind?: string;
   tokenName?: string;
   tokenSymbol?: string;
 
@@ -151,6 +154,8 @@ export interface ContractSourceInfo {
   sourceCode?: string;
   compilerVersion?: string;
   contractName?: string;
+  isProxy?: boolean;
+  implementationAddress?: string;
   abi?: string;
   // Key functions detected
   dangerousFunctions?: string[];

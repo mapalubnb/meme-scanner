@@ -95,8 +95,12 @@ AI_SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V3
 
 在飞书群中 @机器人 或私聊发送:
 
-- **合约地址**: 自动检测链并分析 (0x... 默认 ETH)
+- **任意 EVM 合约**: 支持代币、路由、交易对、质押、借贷、代理等任意合约
+- **裸 0x 地址**: 自动检测链并分析 (自动识别 ETH/BSC/Base/Arbitrum)
 - **指定链**: `bsc:0x1234...` / `base:0x1234...`
+- **链名上下文**: `BSC 0x1234...` / `Base 0x1234...`
+- **多地址**: 一条消息里发送多个合约会逐个分析
+- **浏览器链接**: 支持 Etherscan / BscScan / BaseScan / Arbiscan / Solscan / Tronscan
 - **Solana**: 直接发送 base58 地址
 - **Tron**: T 开头地址
 - `/help` - 帮助

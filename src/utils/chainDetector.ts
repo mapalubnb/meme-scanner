@@ -13,6 +13,68 @@ const EVM_CHAIN_IDS: Record<Chain, string> = {
   tron: '',
 };
 
+const EVM_RPC_URLS: Record<Exclude<Chain, 'solana' | 'tron'>, string[]> = {
+  ethereum: [
+    process.env.ETH_RPC_URL || '',
+    'https://ethereum-rpc.publicnode.com',
+    'https://eth.llamarpc.com',
+  ].filter(Boolean),
+  bsc: [
+    process.env.BSC_RPC_URL || '',
+    'https://bsc-dataseed.binance.org',
+    'https://bsc-rpc.publicnode.com',
+  ].filter(Boolean),
+  base: [
+    process.env.BASE_RPC_URL || '',
+    'https://mainnet.base.org',
+    'https://base-rpc.publicnode.com',
+  ].filter(Boolean),
+  arbitrum: [
+    process.env.ARBITRUM_RPC_URL || '',
+    'https://arb1.arbitrum.io/rpc',
+    'https://arbitrum-one-rpc.publicnode.com',
+  ].filter(Boolean),
+};
+
+type AddressDetection = { chain: Chain; address: string; needsAutoDetect?: boolean };
+
+const CHAIN_ALIASES: Record<string, Chain> = {
+  eth: 'ethereum',
+  ethereum: 'ethereum',
+  erc20: 'ethereum',
+  '以太坊': 'ethereum',
+  bsc: 'bsc',
+  bnb: 'bsc',
+  binance: 'bsc',
+  '币安': 'bsc',
+  '币安链': 'bsc',
+  base: 'base',
+  arb: 'arbitrum',
+  arbitrum: 'arbitrum',
+  sol: 'solana',
+  solana: 'solana',
+  '索拉纳': 'solana',
+  tron: 'tron',
+  trx: 'tron',
+  '波场': 'tron',
+};
+
+const EVM_CONTEXT_HINTS: Array<{ chain: Chain; patterns: RegExp[] }> = [
+  { chain: 'bsc', patterns: [/\bbsc\b/i, /\bbnb\b/i, /binance/i, /币安/i] },
+  { chain: 'base', patterns: [/\bbase\b/i, /basescan/i] },
+  { chain: 'arbitrum', patterns: [/\barb\b/i, /arbitrum/i, /arbiscan/i] },
+  { chain: 'ethereum', patterns: [/\beth\b/i, /ethereum/i, /etherscan/i, /以太坊/i] },
+];
+
+const EXPLORER_PATTERNS: Array<{ chain: Chain; pattern: RegExp }> = [
+  { chain: 'ethereum', pattern: /https?:\/\/(?:www\.)?etherscan\.io\/(?:address|token)\/(0x[a-fA-F0-9]{40})/gi },
+  { chain: 'bsc', pattern: /https?:\/\/(?:www\.)?bscscan\.com\/(?:address|token)\/(0x[a-fA-F0-9]{40})/gi },
+  { chain: 'base', pattern: /https?:\/\/(?:www\.)?basescan\.org\/(?:address|token)\/(0x[a-fA-F0-9]{40})/gi },
+  { chain: 'arbitrum', pattern: /https?:\/\/(?:www\.)?arbiscan\.io\/(?:address|token)\/(0x[a-fA-F0-9]{40})/gi },
+  { chain: 'solana', pattern: /https?:\/\/(?:www\.)?solscan\.io\/(?:token|account|address)\/([1-9A-HJ-NP-Za-km-z]{32,44})/gi },
+  { chain: 'tron', pattern: /https?:\/\/(?:www\.)?tronscan\.org\/#\/(?:address|token20)\/(T[1-9A-HJ-NP-Za-km-z]{33})/gi },
+];
+
 /**
  * Detect chain from address format or user-specified prefix
  * Supported formats:
@@ -21,11 +83,11 @@ const EVM_CHAIN_IDS: Record<Chain, string> = {
  *   - "So1ana..." (Solana base58 address)
  *   - "T..." (Tron address)
  */
-export function detectChainAndAddress(input: string): { chain: Chain; address: string; needsAutoDetect?: boolean } | null {
+export function detectChainAndAddress(input: string): AddressDetection | null {
   const trimmed = input.trim();
 
   // Check explicit chain prefix (e.g., "bsc:0x1234...")
-  const prefixMatch = trimmed.match(/^(eth|ethereum|bsc|base|arb|arbitrum|sol|solana|tron):(.+)$/i);
+  const prefixMatch = trimmed.match(/^([a-zA-Z\u4e00-\u9fa5]+)\s*:\s*(.+)$/i);
   if (prefixMatch) {
     const chainAlias = prefixMatch[1].toLowerCase();
     const address = prefixMatch[2].trim();
@@ -61,10 +123,11 @@ export function detectChainAndAddress(input: string): { chain: Chain; address: s
  *   2. DexScreener token-pairs on ALL chains in PARALLEL (pick chain with most liquidity)
  *   3. Etherscan V2 contract existence check in PARALLEL (definitive on-chain proof)
  *   4. GeckoTerminal token lookup in PARALLEL
- *   5. Default to 'ethereum' only if all methods fail
+ *   5. Public RPC eth_getCode check for arbitrary non-token contracts
+ *   6. Return null if the chain cannot be detected confidently
  */
-export async function autoDetectEVMChain(address: string): Promise<Chain> {
-  const chainsToTry: Chain[] = ['ethereum', 'bsc', 'base', 'arbitrum'];
+export async function autoDetectEVMChain(address: string): Promise<Chain | null> {
+  const chainsToTry: Array<Exclude<Chain, 'solana' | 'tron'>> = ['ethereum', 'bsc', 'base', 'arbitrum'];
   const addressLower = address.toLowerCase();
 
   const chainMap: Record<string, Chain> = {
@@ -148,7 +211,37 @@ export async function autoDetectEVMChain(address: string): Promise<Chain> {
     console.error('[ChainDetector] DexScreener token-pairs parallel failed:', error?.message || error);
   }
 
-  // ─── Strategy 3: Etherscan V2 contract existence check in PARALLEL ───
+  // ─── Strategy 3: Public RPC bytecode check in PARALLEL ───
+  // This is the key fallback for arbitrary non-token contracts.
+  try {
+    const rpcResults = await Promise.allSettled(
+      chainsToTry.map(async (chain) => {
+        const hasCode = await hasRuntimeCodeViaRPC(chain, address);
+        return hasCode ? chain : null;
+      })
+    );
+
+    const found: Chain[] = [];
+    for (const result of rpcResults) {
+      if (result.status === 'fulfilled' && result.value) {
+        found.push(result.value);
+      }
+    }
+
+    if (found.length === 1) {
+      console.log(`[ChainDetector] Public RPC confirmed contract code on ${found[0]}`);
+      return found[0];
+    }
+
+    if (found.length > 1) {
+      console.warn(`[ChainDetector] Address has code on multiple chains (${found.join(', ')}), chain prefix required`);
+      return null;
+    }
+  } catch (error: any) {
+    console.error('[ChainDetector] Public RPC bytecode check failed:', error?.message || error);
+  }
+
+  // ─── Strategy 4: Etherscan V2 contract existence check in PARALLEL ───
   // This is the definitive on-chain check — if the contract was created on a chain, it exists there
   if (config.etherscan.apiKey) {
     try {
@@ -185,7 +278,7 @@ export async function autoDetectEVMChain(address: string): Promise<Chain> {
     }
   }
 
-  // ─── Strategy 4: GeckoTerminal token lookup in PARALLEL ───
+  // ─── Strategy 5: GeckoTerminal token lookup in PARALLEL ───
   try {
     const geckoResults = await Promise.allSettled(
       chainsToTry.map(async (chain) => {
@@ -211,24 +304,38 @@ export async function autoDetectEVMChain(address: string): Promise<Chain> {
     console.error('[ChainDetector] GeckoTerminal parallel check failed:', error?.message || error);
   }
 
-  // ─── Last resort: default to ethereum ───
-  console.warn(`[ChainDetector] Could not detect chain for ${address}, defaulting to ethereum`);
-  return 'ethereum';
+  // ─── Last resort: do not guess. A wrong chain creates a misleading audit. ───
+  console.warn(`[ChainDetector] Could not detect chain for ${address}`);
+  return null;
+}
+
+async function hasRuntimeCodeViaRPC(chain: Exclude<Chain, 'solana' | 'tron'>, address: string): Promise<boolean | null> {
+  for (const rpcUrl of EVM_RPC_URLS[chain]) {
+    try {
+      const res = await axios.post(rpcUrl, {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'eth_getCode',
+        params: [address, 'latest'],
+      }, {
+        timeout: 6000,
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const code = res.data?.result;
+      if (typeof code === 'string') {
+        return code !== '0x' && code !== '0x0';
+      }
+    } catch (error: any) {
+      console.warn(`[ChainDetector] RPC ${chain} ${rpcUrl} failed: ${error?.message || error}`);
+    }
+  }
+
+  return null;
 }
 
 function resolveChainAlias(alias: string): Chain | null {
-  const map: Record<string, Chain> = {
-    eth: 'ethereum',
-    ethereum: 'ethereum',
-    bsc: 'bsc',
-    base: 'base',
-    arb: 'arbitrum',
-    arbitrum: 'arbitrum',
-    sol: 'solana',
-    solana: 'solana',
-    tron: 'tron',
-  };
-  return map[alias] || null;
+  return CHAIN_ALIASES[alias.toLowerCase()] || null;
 }
 
 function isValidAddress(chain: Chain, address: string): boolean {
@@ -236,37 +343,81 @@ function isValidAddress(chain: Chain, address: string): boolean {
   return config.addressPattern.test(address);
 }
 
+function findEVMChainHint(text: string, start: number, end: number): Chain | null {
+  const before = text.slice(Math.max(0, start - 48), start);
+  const after = text.slice(end, Math.min(text.length, end + 48));
+  const context = `${before} ${after}`;
+
+  for (const hint of EVM_CONTEXT_HINTS) {
+    if (hint.patterns.some(pattern => pattern.test(context))) {
+      return hint.chain;
+    }
+  }
+
+  return null;
+}
+
+function addDetection(results: AddressDetection[], detection: AddressDetection | null) {
+  if (!detection) return;
+  const key = `${detection.chain}:${detection.address.toLowerCase()}`;
+  const exists = results.some(r => `${r.chain}:${r.address.toLowerCase()}` === key);
+  if (!exists) results.push(detection);
+}
+
+function hasAnyChainForAddress(results: AddressDetection[], address: string): boolean {
+  return results.some(r => r.address.toLowerCase() === address.toLowerCase());
+}
+
 /**
  * Extract all contract addresses from a message text
  */
-export function extractAddresses(text: string): Array<{ chain: Chain; address: string; needsAutoDetect?: boolean }> {
-  const results: Array<{ chain: Chain; address: string; needsAutoDetect?: boolean }> = [];
+export function extractAddresses(text: string): AddressDetection[] {
+  const results: AddressDetection[] = [];
 
   // Match explicit prefixed addresses (chain:0xAddress or chain:SolanaAddr)
-  const prefixedPattern = /(?:eth|ethereum|bsc|base|arb|arbitrum|sol|solana|tron):[a-zA-Z0-9]{32,66}/gi;
+  const prefixedPattern = /(?:eth|ethereum|erc20|bsc|bnb|binance|base|arb|arbitrum|sol|solana|tron|trx|以太坊|币安|币安链|索拉纳|波场)\s*:\s*[a-zA-Z0-9]{32,66}/gi;
   let match;
   while ((match = prefixedPattern.exec(text)) !== null) {
     const detected = detectChainAndAddress(match[0]);
-    if (detected) results.push(detected);
+    addDetection(results, detected);
+  }
+
+  // Match common explorer links and bind the address to the explorer's chain.
+  for (const { chain, pattern } of EXPLORER_PATTERNS) {
+    pattern.lastIndex = 0;
+    while ((match = pattern.exec(text)) !== null) {
+      addDetection(results, { chain, address: match[1] });
+    }
   }
 
   // Match EVM addresses
   const evmPattern = /0x[a-fA-F0-9]{40}/g;
   while ((match = evmPattern.exec(text)) !== null) {
-    if (!results.find(r => r.address.toLowerCase() === match![0].toLowerCase())) {
-      const detected = detectChainAndAddress(match[0]);
-      if (detected) results.push(detected);
+    const address = match[0];
+    const hintedChain = findEVMChainHint(text, match.index, match.index + address.length);
+    if (hintedChain) {
+      addDetection(results, { chain: hintedChain, address });
+    } else if (!hasAnyChainForAddress(results, address)) {
+      addDetection(results, detectChainAndAddress(address));
+    }
+  }
+
+  // Match Tron addresses before Solana because Tron base58 addresses also look like Solana addresses.
+  const tronPattern = /(?<![a-zA-Z0-9])T[1-9A-HJ-NP-Za-km-z]{33}(?![a-zA-Z0-9])/g;
+  while ((match = tronPattern.exec(text)) !== null) {
+    if (!hasAnyChainForAddress(results, match[0])) {
+      addDetection(results, { chain: 'tron', address: match[0] });
     }
   }
 
   // Match Solana addresses (standalone base58 strings)
   const solPattern = /(?<![a-zA-Z0-9])[1-9A-HJ-NP-Za-km-z]{32,44}(?![a-zA-Z0-9])/g;
   while ((match = solPattern.exec(text)) !== null) {
-    if (!match[0].startsWith('0x') && !results.find(r => r.address === match![0])) {
+    if (!match[0].startsWith('0x') && !hasAnyChainForAddress(results, match[0])) {
       const detected = detectChainAndAddress(match[0]);
-      if (detected) results.push(detected);
+      addDetection(results, detected);
     }
   }
 
-  return results;
+  return results.sort((a, b) => text.indexOf(a.address) - text.indexOf(b.address));
 }

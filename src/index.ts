@@ -123,9 +123,13 @@ async function handleCommand(content: string, messageId: string, _chatId: string
       await feishu.replyText(messageId, [
         '━━ Meme Scanner 使用说明 ━━',
         '',
-        '发送合约地址即可自动分析：',
-        '• EVM地址 (0x...): 默认为ETH链',
+        '发送任意合约地址即可自动分析：',
+        '• EVM合约 (0x...): 支持代币/路由/交易对/质押/借贷/代理等任意合约',
+        '• 裸0x地址: 自动识别 ETH/BSC/Base/Arbitrum',
         '• 指定链: bsc:0x1234... / base:0x1234...',
+        '• 链名上下文: BSC 0x1234... / Base 0x1234...',
+        '• 多地址: 一条消息里发送多个合约会逐个分析',
+        '• 浏览器链接: Etherscan/BscScan/BaseScan/Arbiscan/Solscan/Tronscan',
         '• Solana地址: 直接发送base58地址',
         '• Tron地址: T开头地址',
         '',
@@ -345,7 +349,20 @@ async function handleMessage(data: any) {
     for (let { chain, address, needsAutoDetect } of addresses) {
       try {
         if (needsAutoDetect) {
-          chain = await autoDetectEVMChain(address);
+          const detectedChain = await autoDetectEVMChain(address);
+          if (!detectedChain) {
+            await feishu.replyText(messageId, [
+              `⚠️ 无法自动确认该合约所在链：${address}`,
+              '',
+              '请带链名前缀重新发送，例如：',
+              `eth:${address}`,
+              `bsc:${address}`,
+              `base:${address}`,
+              `arb:${address}`,
+            ].join('\n'));
+            continue;
+          }
+          chain = detectedChain;
           console.log(`[AutoDetect] ${address} -> ${chain}`);
         }
 
